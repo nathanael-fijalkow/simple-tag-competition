@@ -54,8 +54,17 @@ def generate_leaderboard_html(results: List[Dict[str, Any]], output_path: Path):
         results: List of evaluation results
         output_path: Path to save HTML file
     """
-    # Sort by predator score (descending)
-    sorted_results = sorted(results, key=sort_key, reverse=True)
+    # Keep only the best score for each student
+    best_results = {}
+    for result in results:
+        student = result["student"]
+        score = result.get("predator_score", float('-inf'))
+        
+        if student not in best_results or score > best_results[student].get("predator_score", float('-inf')):
+            best_results[student] = result
+    
+    # Convert back to list and sort by predator score (descending)
+    sorted_results = sorted(best_results.values(), key=sort_key, reverse=True)
     
     # Generate HTML
     html = """<!DOCTYPE html>
@@ -271,8 +280,8 @@ def generate_leaderboard_html(results: List[Dict[str, Any]], output_path: Path):
         
         timestamp = datetime.fromisoformat(result["timestamp"]).strftime("%Y-%m-%d %H:%M")
         
-        html += f"""
-                    <tr>
+    total_episodes = sum(r.get("num_episodes", 0) for r in results)
+    total_students = len(best_results)  # Count unique students with best scores
                         <td class="{rank_class}">#{i}</td>
                         <td class="student-name">{result['student']}</td>
                         <td class="score {predator_class}">{result.get('predator_score', 0):.4f}</td>
@@ -293,9 +302,9 @@ def generate_leaderboard_html(results: List[Dict[str, Any]], output_path: Path):
         </div>
         
         <footer>
-        <footer>
             <p>Predator scores represent average rewards over {results[0].get('num_episodes', 0) if results else 0} episodes</p>
             <p>Students train predators to catch the public reference prey agent</p>
+            <p>Only the best score for each student is displayed</p>
         </footer>
 </body>
 </html>

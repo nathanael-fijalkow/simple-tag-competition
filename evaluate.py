@@ -270,7 +270,7 @@ def main():
     parser.add_argument(
         "--reference-agents-dir",
         type=Path,
-        default=Path("reference_agents"),
+        default=Path("reference_agents_source"),
         help="Path to reference agents directory"
     )
     parser.add_argument(
