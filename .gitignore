@@ -44,14 +44,7 @@ runs/
 checkpoints/
 *.log
 
-# Private implementations (keep these secret!)
-private_agents/
 private/
-seeds.json
-config.example.json
-
-# Evaluation results (tracked separately)
-# results/ is tracked for leaderboard
 
 # Temporary files
 *.tmp
