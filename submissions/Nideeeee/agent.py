@@ -343,7 +343,4 @@ def run_training():
 
 
 if __name__ == "__main__":
-
-
-    # Uncomment to run training:
     run_training()
