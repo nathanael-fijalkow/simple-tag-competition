@@ -1,160 +1,176 @@
-"""
-train_agent.py
-
-Entraînement PPO et DQN pour Simple Tag (PettingZoo).
-Génère ppo_model.pth et dqn_model.pth.
-"""
+# ===============================
+# train_models_fixed.py
+# ===============================
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-from pathlib import Path
 from pettingzoo.mpe import simple_tag_v3
-from collections import deque
-import random
 
-# =========================
-# Réseau simple
-# =========================
-class ExampleNetwork(nn.Module):
-    def __init__(self, input_dim, output_dim=5, hidden_dim=128):
+# ---------- Réseau Actor-Critic ----------
+class ActorCritic(nn.Module):
+    def __init__(self, obs_dim, action_dim=5):
         super().__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+        self.shared = nn.Sequential(
+            nn.Linear(obs_dim, 256),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
+            nn.Linear(256, 256),
+            nn.ReLU()
         )
-    
+        self.policy = nn.Linear(256, action_dim)
+        self.value = nn.Linear(256, 1)
+
     def forward(self, x):
-        return self.network(x)
+        h = self.shared(x)
+        return self.policy(h), self.value(h)
 
-# =========================
-# PPO simplifié
-# =========================
+
+# ---------- Agent PPO ----------
 class PPOAgent:
-    def __init__(self, input_dim=14, output_dim=5, lr=1e-3):
-        self.model = ExampleNetwork(input_dim, output_dim)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-
-    def get_action(self, obs):
-        obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-        logits = self.model(obs_tensor)
-        probs = torch.softmax(logits, dim=1)
-        action = torch.multinomial(probs, 1).item()
-        return action, torch.log(probs[0, action])
-
-    def update(self, log_probs, rewards):
-        if not log_probs:
-            return
-        loss = -torch.stack(log_probs) * torch.tensor(rewards, dtype=torch.float32)
-        loss = loss.mean()
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-# =========================
-# DQN simplifié
-# =========================
-class DQNAgent:
-    def __init__(self, input_dim=14, output_dim=5, lr=1e-3):
-        self.model = ExampleNetwork(input_dim, output_dim)
-        self.target_model = ExampleNetwork(input_dim, output_dim)
-        self.target_model.load_state_dict(self.model.state_dict())
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        self.memory = deque(maxlen=10000)
+    def __init__(self, obs_dim, action_dim=5):
+        self.model = ActorCritic(obs_dim, action_dim)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=3e-4)
         self.gamma = 0.99
+        self.clip_eps = 0.2
+        self.entropy_coef = 0.01
 
-    def get_action(self, obs, epsilon=0.1):
-        if np.random.rand() < epsilon:
-            return np.random.randint(0,5)
-        obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-        with torch.no_grad():
-            q_values = self.model(obs_tensor)
-        return torch.argmax(q_values, dim=1).item()
+    def act(self, obs):
+        obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+        logits, value = self.model(obs)
+        probs = torch.softmax(logits, dim=-1)
+        dist = torch.distributions.Categorical(probs)
 
-    def store_transition(self, obs, action, reward, next_obs, done):
-        self.memory.append((obs, action, reward, next_obs, done))
+        action = dist.sample()
+        log_prob = dist.log_prob(action)
 
-    def update(self, batch_size=32):
-        if len(self.memory) < batch_size:
-            return
-        batch = random.sample(self.memory, batch_size)
-        obs_batch = torch.tensor(np.array([b[0] for b in batch]), dtype=torch.float32)
-        action_batch = torch.tensor([b[1] for b in batch])
-        reward_batch = torch.tensor([b[2] for b in batch], dtype=torch.float32)
-        next_obs_batch = torch.tensor(np.array([b[3] for b in batch]), dtype=torch.float32)
-        done_batch = torch.tensor([b[4] for b in batch], dtype=torch.float32)
+        return action.item(), log_prob, value.squeeze()
 
-        q_values = self.model(obs_batch)
-        q_value = q_values.gather(1, action_batch.unsqueeze(1)).squeeze()
-        with torch.no_grad():
-            next_q_values = self.target_model(next_obs_batch)
-            next_q_value = next_q_values.max(1)[0]
-            target = reward_batch + self.gamma * next_q_value * (1 - done_batch)
 
-        loss = nn.MSELoss()(q_value, target)
-        self.optimizer.zero_grad()
+# ---------- Buffer ----------
+class RolloutBuffer:
+    def __init__(self):
+        self.obs = []
+        self.actions = []
+        self.log_probs = []
+        self.rewards = []
+        self.values = []
+        self.dones = []
+
+    def clear(self):
+        self.__init__()
+
+
+# ---------- Update PPO ----------
+def ppo_update(agent, buffer, epochs=4):
+    obs = torch.tensor(np.array(buffer.obs), dtype=torch.float32)
+    actions = torch.tensor(buffer.actions)
+    old_log_probs = torch.stack(buffer.log_probs)
+    values = torch.stack(buffer.values)
+    rewards = buffer.rewards
+    dones = buffer.dones
+
+    # Calcul des returns
+    returns = []
+    G = 0
+    for r, d in zip(reversed(rewards), reversed(dones)):
+        if d:
+            G = 0
+        G = r + agent.gamma * G
+        returns.insert(0, G)
+
+    returns = torch.tensor(returns, dtype=torch.float32)
+    advantages = returns - values.detach()
+
+    for _ in range(epochs):
+        logits, value_preds = agent.model(obs)
+        probs = torch.softmax(logits, dim=-1)
+        dist = torch.distributions.Categorical(probs)
+
+        log_probs = dist.log_prob(actions)
+        ratios = torch.exp(log_probs - old_log_probs)
+
+        surr1 = ratios * advantages
+        surr2 = torch.clamp(ratios, 1-agent.clip_eps, 1+agent.clip_eps) * advantages
+
+        policy_loss = -torch.min(surr1, surr2).mean()
+        value_loss = nn.MSELoss()(value_preds.squeeze(), returns)
+
+        loss = policy_loss + 0.5 * value_loss
+
+        agent.optimizer.zero_grad()
         loss.backward()
-        self.optimizer.step()
-        self.target_model.load_state_dict(self.model.state_dict())
+        agent.optimizer.step()
 
-# =========================
-# Entraînement multi-agent
-# =========================
-def train_agent(agent_type="PPO", episodes=200, max_steps=25):
+
+# ---------- Entraînement ----------
+def train():
     env = simple_tag_v3.parallel_env(
         num_good=1,
         num_adversaries=3,
         num_obstacles=2,
-        max_cycles=max_steps,
+        max_cycles=100,
         continuous_actions=False
     )
 
-    obs, infos = env.reset()
-    input_dim = len(obs['adversary_0'])  # 14 pour predator
-    if agent_type.upper() == "PPO":
-        agent = PPOAgent(input_dim=input_dim)
-    else:
-        agent = DQNAgent(input_dim=input_dim)
+    sample_obs = env.reset()[0]
+    obs_dim = sample_obs[[a for a in sample_obs if "adversary" in a][0]].shape[0]
+    print("Observation dimension:", obs_dim)
 
-    for ep in range(episodes):
-        obs, infos = env.reset()
-        done = {k: False for k in env.agents}
-        log_probs = []
-        rewards = []
+    agent = PPOAgent(obs_dim=obs_dim)
+    buffer = RolloutBuffer()
+    update_every = 5
 
-        for t in range(max_steps):
+    for episode in range(5000):
+        obs, _ = env.reset()
+        episode_rewards = {aid: 0 for aid in env.agents}
+
+        while env.agents:
+            # Au lieu de stocker value/log_prob juste après act
+            # -> on stocke tout dans le buffer seulement après le reward shaping
+
+            # 1️⃣ Calcul des actions
             actions = {}
+            tmp = {}
             for agent_id in env.agents:
                 if "adversary" in agent_id:
-                    if agent_type.upper() == "PPO":
-                        a, lp = agent.get_action(obs[agent_id])
-                        actions[agent_id] = a
-                        log_probs.append(lp)
-                        rewards.append(0)  # placeholder simple
-                    else:
-                        a = agent.get_action(obs[agent_id], epsilon=0.1)
-                        actions[agent_id] = a
-                        # Pour DQN, stocker transition
+                    action, logp, value = agent.act(obs[agent_id])
+                    actions[agent_id] = action
+                    tmp[agent_id] = (obs[agent_id], action, logp.detach(), value.detach())
                 else:
-                    actions[agent_id] = np.random.randint(0,5)
-            obs, rew, term, trunc, info = env.step(actions)
-        if agent_type.upper() == "PPO":
-            agent.update(log_probs, rewards)
+                    actions[agent_id] = np.random.randint(5)
 
-    model_path = Path(f"{agent_type.lower()}_model.pth")
-    torch.save(agent.model.state_dict(), model_path)
-    print(f"{agent_type} model saved to {model_path}")
+            # 2️⃣ Step de l'environnement
+            next_obs, rewards, term, trunc, _ = env.step(actions)
 
-# =========================
-# Lancer entraînement
-# =========================
+            # 3️⃣ Shaped reward et stockage dans buffer
+            for agent_id in env.agents:
+                if "adversary" in agent_id:
+                    dx, dy = obs[agent_id][4], obs[agent_id][5]
+                    dist_to_prey = np.sqrt(dx**2 + dy**2)
+                    shaped_reward = rewards[agent_id] - 0.01 * dist_to_prey
+                    o, a, lp, v = tmp[agent_id]
+                    buffer.obs.append(o)
+                    buffer.actions.append(a)
+                    buffer.log_probs.append(lp)
+                    buffer.values.append(v)
+                    buffer.rewards.append(shaped_reward)
+                    buffer.dones.append(term[agent_id] or trunc[agent_id])
+                    episode_rewards[agent_id] += shaped_reward
+
+            obs = next_obs
+
+        if (episode + 1) % update_every == 0:
+            ppo_update(agent, buffer)
+            buffer.clear()
+
+        if episode % 100 == 0:
+            avg_reward = np.mean(list(episode_rewards.values()))
+            print(f"Episode {episode}, avg shaped reward: {avg_reward:.2f}")
+
+    torch.save(agent.model.state_dict(), "ppo_predator.pth")
+    print("✔ Model saved as ppo_predator.pth")
+
+
 if __name__ == "__main__":
-    print("Training PPO agent...")
-    train_agent("PPO", episodes=1000)
-
-    print("\nTraining DQN agent...")
-    train_agent("DQN", episodes=200)
+    train()
