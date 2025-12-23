@@ -13,7 +13,11 @@ from os.path import isfile, join
 import importlib.util
 
 import matplotlib.pyplot as plt
-import pandas as pd
+
+try:
+    import pandas as pd
+except ImportError:
+    print("Pandas not installed, loading and writing to files will fail")
 
 try:
     from pettingzoo.mpe import simple_tag_v3
