@@ -1,5 +1,5 @@
 # ===============================
-# train_models_fixed.py
+# train_models_final.py
 # ===============================
 
 import torch
@@ -33,7 +33,8 @@ class PPOAgent:
         self.optimizer = optim.Adam(self.model.parameters(), lr=3e-4)
         self.gamma = 0.99
         self.clip_eps = 0.2
-        self.entropy_coef = 0.01
+        self.entropy_coef = 0.001  # 🔧 réduit
+        self.value_coef = 0.5
 
     def act(self, obs):
         obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
@@ -44,7 +45,11 @@ class PPOAgent:
         action = dist.sample()
         log_prob = dist.log_prob(action)
 
-        return action.item(), log_prob, value.squeeze()
+        return (
+            action.item(),
+            log_prob.detach(),
+            value.squeeze().detach(),
+        )
 
 
 # ---------- Buffer ----------
@@ -61,26 +66,30 @@ class RolloutBuffer:
         self.__init__()
 
 
-# ---------- Update PPO ----------
+# ---------- PPO Update ----------
 def ppo_update(agent, buffer, epochs=4):
+    if len(buffer.rewards) == 0:
+        return
+
     obs = torch.tensor(np.array(buffer.obs), dtype=torch.float32)
     actions = torch.tensor(buffer.actions)
     old_log_probs = torch.stack(buffer.log_probs)
-    values = torch.stack(buffer.values)
+    values = torch.stack(buffer.values).squeeze()
     rewards = buffer.rewards
     dones = buffer.dones
 
-    # Calcul des returns
+    # ----- Returns -----
     returns = []
-    G = 0
+    G = 0.0
     for r, d in zip(reversed(rewards), reversed(dones)):
         if d:
-            G = 0
+            G = 0.0
         G = r + agent.gamma * G
         returns.insert(0, G)
-
     returns = torch.tensor(returns, dtype=torch.float32)
-    advantages = returns - values.detach()
+
+    advantages = returns - values
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)  # 🔧
 
     for _ in range(epochs):
         logits, value_preds = agent.model(obs)
@@ -92,11 +101,16 @@ def ppo_update(agent, buffer, epochs=4):
 
         surr1 = ratios * advantages
         surr2 = torch.clamp(ratios, 1-agent.clip_eps, 1+agent.clip_eps) * advantages
-
         policy_loss = -torch.min(surr1, surr2).mean()
-        value_loss = nn.MSELoss()(value_preds.squeeze(), returns)
 
-        loss = policy_loss + 0.5 * value_loss
+        value_loss = nn.MSELoss()(value_preds.squeeze(), returns)
+        entropy = dist.entropy().mean()
+
+        loss = (
+            policy_loss
+            + agent.value_coef * value_loss
+            - agent.entropy_coef * entropy
+        )
 
         agent.optimizer.zero_grad()
         loss.backward()
@@ -110,53 +124,59 @@ def train():
         num_adversaries=3,
         num_obstacles=2,
         max_cycles=100,
-        continuous_actions=False
+        continuous_actions=True,  # 🔧 CRITIQUE
     )
 
-    sample_obs = env.reset()[0]
-    obs_dim = sample_obs[[a for a in sample_obs if "adversary" in a][0]].shape[0]
+    obs, _ = env.reset()
+    predator_id = [a for a in obs if "adversary" in a][0]
+    obs_dim = obs[predator_id].shape[0]
     print("Observation dimension:", obs_dim)
 
-    agent = PPOAgent(obs_dim=obs_dim)
+    agent = PPOAgent(obs_dim)
     buffer = RolloutBuffer()
     update_every = 5
 
     for episode in range(5000):
         obs, _ = env.reset()
-        episode_rewards = {aid: 0 for aid in env.agents}
+        episode_reward = 0.0
+
+        # distances initiales
+        prev_dist = {
+            a: np.linalg.norm(obs[a][:2] - obs["agent_0"][:2])
+            for a in env.agents if "adversary" in a
+        }
 
         while env.agents:
-            # Au lieu de stocker value/log_prob juste après act
-            # -> on stocke tout dans le buffer seulement après le reward shaping
-
-            # 1️⃣ Calcul des actions
             actions = {}
-            tmp = {}
-            for agent_id in env.agents:
-                if "adversary" in agent_id:
-                    action, logp, value = agent.act(obs[agent_id])
-                    actions[agent_id] = action
-                    tmp[agent_id] = (obs[agent_id], action, logp.detach(), value.detach())
+            cache = {}
+
+            for aid in env.agents:
+                if "adversary" in aid:
+                    act, logp, val = agent.act(obs[aid])
+                    actions[aid] = act
+                    cache[aid] = (obs[aid], act, logp, val)
                 else:
-                    actions[agent_id] = np.random.randint(5)
+                    actions[aid] = 0  # 🔧 prey fixe
 
-            # 2️⃣ Step de l'environnement
-            next_obs, rewards, term, trunc, _ = env.step(actions)
+            next_obs, rewards, terms, truncs, _ = env.step(actions)
 
-            # 3️⃣ Shaped reward et stockage dans buffer
-            for agent_id in env.agents:
-                if "adversary" in agent_id:
-                    dx, dy = obs[agent_id][4], obs[agent_id][5]
-                    dist_to_prey = np.sqrt(dx**2 + dy**2)
-                    shaped_reward = rewards[agent_id] - 0.01 * dist_to_prey
-                    o, a, lp, v = tmp[agent_id]
-                    buffer.obs.append(o)
-                    buffer.actions.append(a)
-                    buffer.log_probs.append(lp)
-                    buffer.values.append(v)
-                    buffer.rewards.append(shaped_reward)
-                    buffer.dones.append(term[agent_id] or trunc[agent_id])
-                    episode_rewards[agent_id] += shaped_reward
+            for aid in cache:
+                curr_dist = np.linalg.norm(
+                    next_obs[aid][:2] - next_obs["agent_0"][:2]
+                )
+                delta_dist = prev_dist[aid] - curr_dist
+                shaped_reward = rewards[aid] + 0.1 * delta_dist  # 🔧
+
+                o, a, lp, v = cache[aid]
+                buffer.obs.append(o)
+                buffer.actions.append(a)
+                buffer.log_probs.append(lp)
+                buffer.values.append(v)
+                buffer.rewards.append(shaped_reward)
+                buffer.dones.append(terms[aid] or truncs[aid])
+
+                episode_reward += shaped_reward
+                prev_dist[aid] = curr_dist
 
             obs = next_obs
 
@@ -165,8 +185,7 @@ def train():
             buffer.clear()
 
         if episode % 100 == 0:
-            avg_reward = np.mean(list(episode_rewards.values()))
-            print(f"Episode {episode}, avg shaped reward: {avg_reward:.2f}")
+            print(f"Episode {episode}, avg reward: {episode_reward:.2f}")
 
     torch.save(agent.model.state_dict(), "ppo_predator.pth")
     print("✔ Model saved as ppo_predator.pth")
