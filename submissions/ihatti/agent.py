@@ -13,13 +13,12 @@ from collections import deque
 
 class ActorCritic(nn.Module):
     """
-    Actor-Critic network for PPO.
-    Actor outputs action probabilities, Critic outputs state value.
+    actor-critic network for ppo.
     """
     def __init__(self, obs_dim, action_dim, hidden_dim=128):
         super(ActorCritic, self).__init__()
         
-        # Shared feature extraction layers
+        # shared feature extraction layers
         self.shared = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.ReLU(),
@@ -27,7 +26,7 @@ class ActorCritic(nn.Module):
             nn.ReLU()
         )
         
-        # Actor head (policy)
+        # actor head (policy)
         self.actor = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -35,7 +34,7 @@ class ActorCritic(nn.Module):
             nn.Softmax(dim=-1)
         )
         
-        # Critic head (value function)
+        # critic head (value function)
         self.critic = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -43,14 +42,14 @@ class ActorCritic(nn.Module):
         )
     
     def forward(self, state):
-        """Forward pass through both actor and critic."""
+        """forward pass through both actor and critic."""
         features = self.shared(state)
         action_probs = self.actor(features)
         state_value = self.critic(features)
         return action_probs, state_value
     
     def act(self, state):
-        """Select action and return log probability."""
+        """select action and return log probability."""
         action_probs, state_value = self.forward(state)
         dist = Categorical(action_probs)
         action = dist.sample()
@@ -58,7 +57,7 @@ class ActorCritic(nn.Module):
         return action.item(), log_prob, state_value
     
     def evaluate(self, states, actions):
-        """Evaluate actions for PPO update."""
+        """evaluate actions for ppo update."""
         action_probs, state_values = self.forward(states)
         dist = Categorical(action_probs)
         log_probs = dist.log_prob(actions)
@@ -67,7 +66,7 @@ class ActorCritic(nn.Module):
 
 
 class PPOMemory:
-    """Memory buffer for storing trajectories."""
+    """memory buffer for storing trajectories."""
     def __init__(self):
         self.states = []
         self.actions = []
@@ -93,7 +92,7 @@ class PPOMemory:
         self.dones.clear()
     
     def get_batches(self):
-        """Convert lists to tensors."""
+        """convert lists to tensors."""
         states = torch.FloatTensor(np.array(self.states))
         actions = torch.LongTensor(self.actions)
         old_log_probs = torch.FloatTensor(self.log_probs)
@@ -105,7 +104,7 @@ class PPOMemory:
 
 
 class PPOTrainer:
-    """PPO training algorithm."""
+    """ppo training algorithm."""
     def __init__(
         self,
         obs_dim,
@@ -135,7 +134,7 @@ class PPOTrainer:
         self.memory = PPOMemory()
     
     def compute_gae(self, rewards, values, dones, next_value):
-        """Compute Generalized Advantage Estimation."""
+        """compute generalized advantage estimation."""
         advantages = []
         gae = 0
         
@@ -156,25 +155,24 @@ class PPOTrainer:
         return torch.FloatTensor(advantages)
     
     def update(self):
-        """Perform PPO update."""
-        # Get all data from memory
+        """perform ppo update."""
+        # get all data from memory
         states, actions, old_log_probs, rewards, values, dones = self.memory.get_batches()
         
-        # Compute advantages and returns
+        # compute advantages and returns
         with torch.no_grad():
-            # For last value, we use current value estimate
             next_value = values[-1].item()
             advantages = self.compute_gae(rewards, values, dones, next_value)
             returns = advantages + values
             
-            # Normalize advantages
+            # normalize advantages
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
-        # PPO epochs
+        # ppo epochs
         dataset_size = len(states)
         
         for _ in range(self.ppo_epochs):
-            # Generate random mini-batches
+            # generate random mini-batches
             indices = np.arange(dataset_size)
             np.random.shuffle(indices)
             
@@ -182,22 +180,22 @@ class PPOTrainer:
                 end_idx = min(start_idx + self.mini_batch_size, dataset_size)
                 batch_indices = indices[start_idx:end_idx]
                 
-                # Sample mini-batch
+                # sample mini-batch
                 batch_states = states[batch_indices]
                 batch_actions = actions[batch_indices]
                 batch_old_log_probs = old_log_probs[batch_indices]
                 batch_advantages = advantages[batch_indices]
                 batch_returns = returns[batch_indices]
                 
-                # Evaluate actions
+                # evaluate actions
                 log_probs, state_values, entropy = self.policy.evaluate(
                     batch_states, batch_actions
                 )
                 
-                # Compute ratio for PPO
+                # compute ratio for ppo
                 ratios = torch.exp(log_probs - batch_old_log_probs)
                 
-                # Surrogate loss
+                # surrogate loss
                 surr1 = ratios * batch_advantages
                 surr2 = torch.clamp(
                     ratios,
@@ -206,116 +204,101 @@ class PPOTrainer:
                 ) * batch_advantages
                 actor_loss = -torch.min(surr1, surr2).mean()
                 
-                # Value loss
+                # value loss
                 value_loss = nn.MSELoss()(state_values.squeeze(), batch_returns)
                 
-                # Entropy bonus (for exploration)
+                # entropy bonus (for exploration)
                 entropy_loss = -entropy.mean()
                 
-                # Total loss
+                # total loss
                 loss = (
                     actor_loss +
                     self.value_coef * value_loss +
                     self.entropy_coef * entropy_loss
                 )
                 
-                # Optimize
+                # optimize
                 self.optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.optimizer.step()
         
-        # Clear memory
+        # clear memory
         self.memory.clear()
 
 
 class StudentAgent:
     """
-    PPO-based predator agent for Simple Tag environment.
+    ppo-based predator agent for simple tag environment.
     """
     def __init__(self):
-        """Initialize your predator agent."""
-        # Observation dimensions for adversary agents
-        # Based on simple_tag: [self_vel(2), self_pos(2), landmark_rel_pos(4), 
-        #                       other_agent_rel_pos(6), other_agent_vel(6)]
-        # Total: 2 + 2 + 4 + 6 + 6 = 20 (can vary based on num agents/obstacles)
-        # For adversaries with standard config: obs_dim is typically 14 or 16
-        self.obs_dim = 16  # Will be updated on first observation
+        """initialize your predator agent."""
+        self.obs_dim = 16
         self.action_dim = 5  # [no_action, left, right, down, up]
         
-        # Initialize PPO trainer
-        self.trainer = None
-        self.is_training = False  # Set to True if you want to train
+        # model initialization
+        self.device = torch.device("cpu")
+        self.policy = ActorCritic(self.obs_dim, self.action_dim).to(self.device)
         
-        # For inference, we'll use a pre-initialized network
-        self.policy = None
-        self.initialized = False
+        # load weights
+        self.load_model()
     
-    def _initialize(self, obs):
-        """Initialize network with correct observation dimension."""
-        if not self.initialized:
-            self.obs_dim = len(obs)
-            self.policy = ActorCritic(self.obs_dim, self.action_dim)
-            
-            # If you have a pre-trained model, load it here:
-            # self.policy.load_state_dict(torch.load('ppo_predator.pth'))
-            
-            self.policy.eval()
-            self.initialized = True
+    def load_model(self):
+        """load trained model weights."""
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(script_dir, "ppo_predator.pth")
+        
+        if os.path.exists(model_path):
+            self.policy.load_state_dict(torch.load(model_path, map_location=self.device))
+            self.policy.eval()  # evaluation mode
+            print(f"loaded model from {model_path}")
+        else:
+            print("warning: no model found, using random weights.")
     
     def get_action(self, observation, agent_id: str):
         """
-        Get action for the given observation.
+        get action for the given observation.
         
-        Args:
-            observation: Agent's observation from the environment
-            agent_id: Unique identifier for this agent instance
+        args:
+            observation: agent's observation from the environment
+            agent_id: unique identifier for this agent instance
             
-        Returns:
-            action: Action to take in the environment (0-4)
+        returns:
+            action: action to take in the environment (0-4)
         """
-        # Initialize on first call
-        if not self.initialized:
-            self._initialize(observation)
+        # handle dict observations if needed
+        if isinstance(observation, dict):
+            observation = observation['observation']
         
-        # Convert observation to tensor
-        obs_tensor = torch.FloatTensor(observation).unsqueeze(0)
+        # convert observation to tensor
+        obs_tensor = torch.tensor(observation, dtype=torch.float32).unsqueeze(0).to(self.device)
         
-        # Get action from policy
+        # get action from policy
         with torch.no_grad():
             action_probs, _ = self.policy(obs_tensor)
-            dist = Categorical(action_probs)
-            action = dist.sample()
+            # use argmax for deterministic behavior (or sample for stochastic)
+            action = torch.argmax(action_probs).item()
         
-        return action.item()
-    
-    def save_model(self, path='ppo_predator.pth'):
-        """Save the trained model."""
-        if self.policy is not None:
-            torch.save(self.policy.state_dict(), path)
-            print(f"Model saved to {path}")
-    
-    def load_model(self, path='ppo_predator.pth'):
-        """Load a pre-trained model."""
-        if self.policy is None:
-            # Create policy with default obs_dim, will be reinitialized if needed
-            self.policy = ActorCritic(self.obs_dim, self.action_dim)
-        
-        self.policy.load_state_dict(torch.load(path))
-        self.policy.eval()
-        self.initialized = True
-        print(f"Model loaded from {path}")
+        return action
 
 
-# Training script (optional - run separately to train the agent)
+# training script
 def train_ppo_agent(num_episodes=1000, save_path='ppo_predator.pth'):
     """
-    Training function for PPO agent.
-    Run this separately to train your agent before submission.
+    training function for ppo agent using shared model for all adversaries.
     """
-    from pettingzoo.mpe import simple_tag_v3
+    try:
+        from pettingzoo.mpe import simple_tag_v3
+    except ImportError:
+        print("error: pettingzoo not installed. run: pip install pettingzoo[mpe]")
+        return None
     
-    # Create environment
+    print("="*60)
+    print("training ppo agent for simple tag")
+    print("="*60)
+    
+    # create environment
     env = simple_tag_v3.parallel_env(
         num_good=1,
         num_adversaries=3,
@@ -324,24 +307,30 @@ def train_ppo_agent(num_episodes=1000, save_path='ppo_predator.pth'):
         continuous_actions=False
     )
     
-    # Initialize
+    # initialize
     observations, infos = env.reset()
     first_adversary = [a for a in env.agents if "adversary" in a][0]
     obs_dim = len(observations[first_adversary])
     action_dim = 5
     
-    # Create PPO trainers for each adversary
-    trainers = {}
-    for agent_id in env.agents:
-        if "adversary" in agent_id:
-            trainers[agent_id] = PPOTrainer(obs_dim, action_dim)
+    print(f"observation dimension: {obs_dim}")
+    print(f"action dimension: {action_dim}")
+    print(f"number of episodes: {num_episodes}")
+    print(f"using shared model for all 3 adversaries")
+    print("="*60)
     
-    # Training loop
+    # create one shared ppo trainer for all adversaries
+    trainer = PPOTrainer(obs_dim, action_dim)
+    
+    # training loop
     episode_rewards = deque(maxlen=100)
     
     for episode in range(num_episodes):
         observations, infos = env.reset()
         episode_reward = 0
+        
+        # track actions and values for this episode
+        episode_data = {}
         
         for step in range(25):
             actions = {}
@@ -350,33 +339,28 @@ def train_ppo_agent(num_episodes=1000, save_path='ppo_predator.pth'):
                 obs = observations[agent_id]
                 
                 if "adversary" in agent_id:
-                    # Get action from PPO agent
-                    trainer = trainers[agent_id]
+                    # get action from shared ppo agent
                     action, log_prob, value = trainer.policy.act(
                         torch.FloatTensor(obs)
                     )
                     actions[agent_id] = action
+                    episode_data[agent_id] = (action, log_prob, value)
                 else:
-                    # Random action for prey
+                    # random action for prey
                     actions[agent_id] = np.random.randint(0, 5)
             
-            # Environment step
+            # environment step
             next_observations, rewards, terminations, truncations, infos = env.step(actions)
             
-            # Store experience for each adversary
+            # store experience for all adversaries in shared memory
             for agent_id in env.agents:
-                if "adversary" in agent_id:
-                    trainer = trainers[agent_id]
-                    
+                if "adversary" in agent_id and agent_id in episode_data:
                     obs = observations[agent_id]
-                    action = actions[agent_id]
+                    action, log_prob, value = episode_data[agent_id]
                     reward = rewards.get(agent_id, 0)
                     done = terminations.get(agent_id, False) or truncations.get(agent_id, False)
                     
-                    # Get log_prob and value again for storage
-                    with torch.no_grad():
-                        _, log_prob, value = trainer.policy.act(torch.FloatTensor(obs))
-                    
+                    # add to shared memory
                     trainer.memory.add(
                         obs, action, log_prob.item(), reward, value.item(), done
                     )
@@ -388,28 +372,29 @@ def train_ppo_agent(num_episodes=1000, save_path='ppo_predator.pth'):
             if not env.agents:
                 break
         
-        # Update all adversary agents
-        for agent_id, trainer in trainers.items():
-            if len(trainer.memory.states) > 0:
-                trainer.update()
+        # update the shared model (learns from all 3 adversaries)
+        if len(trainer.memory.states) > 0:
+            trainer.update()
         
         episode_rewards.append(episode_reward)
         
+        # print progress
         if (episode + 1) % 10 == 0:
             avg_reward = np.mean(episode_rewards)
-            print(f"Episode {episode + 1}/{num_episodes}, Avg Reward: {avg_reward:.2f}")
+            print(f"episode {episode + 1}/{num_episodes} | avg reward (last 100): {avg_reward:.2f}")
         
         env.close()
     
-    # Save the trained model (save first adversary's model)
-    first_adversary = list(trainers.keys())[0]
-    torch.save(trainers[first_adversary].policy.state_dict(), save_path)
-    print(f"\nTraining complete! Model saved to {save_path}")
+    # save the trained model
+    torch.save(trainer.policy.state_dict(), save_path)
+
+
+    print(f"training complete! model saved to: {save_path}")
+
     
-    return trainers
+    return trainer
 
 
 if __name__ == "__main__":
-    # Example: Train the agent
-    print("Training PPO agent for Simple Tag...")
-    train_ppo_agent(num_episodes=500, save_path='ppo_predator.pth')
+    # train the agent when running this file directly
+    train_ppo_agent(num_episodes=1000, save_path='ppo_predator.pth')
