@@ -7,16 +7,18 @@ from pathlib import Path
 import random
 
 # ===== Hyperparameters =====
-HIDDEN_DIM = 256
-LR = 3e-4
-GAMMA = 0.99
+HIDDEN_DIM = 512
+LR_ACTOR = 1e-3
+LR_CRITIC = 5e-4
+GAMMA = 0.95
 EPS_CLIP = 0.2
-ENTROPY_COEF = 0.01
-MAX_EPISODES = 50000
+ENTROPY_COEF = 0.02
+MAX_EPISODES = 10000
 MAX_CYCLES = 50
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EPOCHS = 5
+EPOCHS = 10
 ACTION_DIM = 5
+GRAD_CLIP = 0.5
 
 # ===== Actor & Critic =====
 class Actor(nn.Module):
@@ -73,6 +75,8 @@ def ppo_update(actor, critic, optimizer_actor, optimizer_critic, states, actions
         optimizer_actor.zero_grad()
         optimizer_critic.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(actor.parameters(), GRAD_CLIP)
+        torch.nn.utils.clip_grad_norm_(critic.parameters(), GRAD_CLIP)
         optimizer_actor.step()
         optimizer_critic.step()
 
@@ -83,17 +87,16 @@ def train():
         max_cycles=MAX_CYCLES, continuous_actions=False
     )
 
-    # Detect obs dim dynamically
-    obs_dict, infos = env.reset()
+    obs_dict, _ = env.reset()
     sample_agent = [a for a in obs_dict.keys() if "adversary" in a][0]
     obs_dim = len(obs_dict[sample_agent])
     actor = Actor(obs_dim=obs_dim).to(DEVICE)
-    critic = Critic(obs_dim=obs_dim*3).to(DEVICE)  # 3 predators
-    optimizer_actor = optim.Adam(actor.parameters(), lr=LR)
-    optimizer_critic = optim.Adam(critic.parameters(), lr=LR)
+    critic = Critic(obs_dim=obs_dim*3).to(DEVICE)  # central critic
+    optimizer_actor = optim.Adam(actor.parameters(), lr=LR_ACTOR)
+    optimizer_critic = optim.Adam(critic.parameters(), lr=LR_CRITIC)
 
     for episode in range(1, MAX_EPISODES+1):
-        obs_dict, infos = env.reset()
+        obs_dict, _ = env.reset()
         memory = {'states_actor': [], 'states_critic': [], 'actions': [], 'rewards': [], 'logits': []}
         episode_reward = 0
 
@@ -107,7 +110,6 @@ def train():
                 if "adversary" in agent_id:
                     predator_obs_list.append(o)
 
-            # Centralized critic input
             central_state = np.concatenate(predator_obs_list)
 
             for agent_id in env.agents:
@@ -126,9 +128,8 @@ def train():
                 else:
                     actions_dict[agent_id] = random.randint(0, ACTION_DIM-1)
 
-            obs_dict, rewards, terminations, truncations, infos = env.step(actions_dict)
+            obs_dict, rewards, terminations, truncations, _ = env.step(actions_dict)
 
-            # Accumulate predator rewards
             for agent_id, r in rewards.items():
                 if "adversary" in agent_id:
                     memory['rewards'].append(r)
@@ -149,20 +150,18 @@ def train():
                    memory['states_actor'], memory['actions'], returns, memory['logits'],
                    states_critic=memory['states_critic'])
 
-        # ----- Lightweight logging -----
+        # Logging
         if episode % 50 == 0:
             avg_reward = episode_reward / MAX_CYCLES
             print(f"Episode {episode}/{MAX_EPISODES} | Avg Predator Reward: {avg_reward:.2f}")
 
-        # Save every 1000 episodes
-        if episode % 1000 == 0:
+        # Save checkpoints
+        if episode % 5000 == 0:
             torch.save(actor.state_dict(), f"predator_model_ep{episode}.pth")
             print(f"Saved model at episode {episode}")
 
-    # Save final actor
-    save_path = Path("predator_model_final.pth")
-    torch.save(actor.state_dict(), save_path)
-    print(f"Training complete. Final model saved at {save_path}")
+    torch.save(actor.state_dict(), Path("predator_model_final.pth"))
+    print("Training complete. Final model saved at predator_model_final.pth")
 
 if __name__ == "__main__":
     train()
