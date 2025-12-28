@@ -5,20 +5,22 @@ import numpy as np
 from pettingzoo.mpe import simple_tag_v3
 from pathlib import Path
 import random
+from collections import deque
 
 # ===== Hyperparameters =====
-HIDDEN_DIM = 512
-LR_ACTOR = 1e-3
-LR_CRITIC = 5e-4
-GAMMA = 0.95
+HIDDEN_DIM = 256
+LR = 3e-4
+GAMMA = 0.99
 EPS_CLIP = 0.2
-ENTROPY_COEF = 0.02
-MAX_EPISODES = 10000
+ENTROPY_COEF = 0.01
+MAX_EPISODES = 10000  # Réaliste pour commencer
 MAX_CYCLES = 50
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EPOCHS = 10
+EPOCHS = 5
 ACTION_DIM = 5
-GRAD_CLIP = 0.5
+LOG_INTERVAL = 50
+SAVE_INTERVAL = 500
+SLIDING_WINDOW = 100
 
 # ===== Actor & Critic =====
 class Actor(nn.Module):
@@ -49,15 +51,15 @@ class Critic(nn.Module):
 
 # ===== PPO update =====
 def ppo_update(actor, critic, optimizer_actor, optimizer_critic, states, actions, returns, old_logits, states_critic=None):
-    states = torch.tensor(states, dtype=torch.float32, device=DEVICE)
+    states = torch.tensor(np.array(states), dtype=torch.float32, device=DEVICE)
     actions = torch.tensor(actions, dtype=torch.int64, device=DEVICE)
     returns = torch.tensor(returns, dtype=torch.float32, device=DEVICE)
-    old_logits = torch.tensor(old_logits, dtype=torch.float32, device=DEVICE)
+    old_logits = torch.tensor(np.array(old_logits), dtype=torch.float32, device=DEVICE)
 
     if states_critic is None:
         states_critic = states
     else:
-        states_critic = torch.tensor(states_critic, dtype=torch.float32, device=DEVICE)
+        states_critic = torch.tensor(np.array(states_critic), dtype=torch.float32, device=DEVICE)
 
     for _ in range(EPOCHS):
         logits = actor(states)
@@ -75,8 +77,6 @@ def ppo_update(actor, critic, optimizer_actor, optimizer_critic, states, actions
         optimizer_actor.zero_grad()
         optimizer_critic.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(actor.parameters(), GRAD_CLIP)
-        torch.nn.utils.clip_grad_norm_(critic.parameters(), GRAD_CLIP)
         optimizer_actor.step()
         optimizer_critic.step()
 
@@ -87,16 +87,19 @@ def train():
         max_cycles=MAX_CYCLES, continuous_actions=False
     )
 
-    obs_dict, _ = env.reset()
+    # Detect obs dim dynamically
+    obs_dict, infos = env.reset()
     sample_agent = [a for a in obs_dict.keys() if "adversary" in a][0]
     obs_dim = len(obs_dict[sample_agent])
     actor = Actor(obs_dim=obs_dim).to(DEVICE)
-    critic = Critic(obs_dim=obs_dim*3).to(DEVICE)  # central critic
-    optimizer_actor = optim.Adam(actor.parameters(), lr=LR_ACTOR)
-    optimizer_critic = optim.Adam(critic.parameters(), lr=LR_CRITIC)
+    critic = Critic(obs_dim=obs_dim*3).to(DEVICE)
+    optimizer_actor = optim.Adam(actor.parameters(), lr=LR)
+    optimizer_critic = optim.Adam(critic.parameters(), lr=LR)
 
-    for episode in range(1, MAX_EPISODES+1):
-        obs_dict, _ = env.reset()
+    sliding_rewards = deque(maxlen=SLIDING_WINDOW)
+
+    for episode in range(1, MAX_EPISODES + 1):
+        obs_dict, infos = env.reset()
         memory = {'states_actor': [], 'states_critic': [], 'actions': [], 'rewards': [], 'logits': []}
         episode_reward = 0
 
@@ -104,7 +107,6 @@ def train():
             actions_dict = {}
             predator_obs_list = []
 
-            # Collect predator obs
             for agent_id in env.agents:
                 o = obs_dict[agent_id]
                 if "adversary" in agent_id:
@@ -128,7 +130,7 @@ def train():
                 else:
                     actions_dict[agent_id] = random.randint(0, ACTION_DIM-1)
 
-            obs_dict, rewards, terminations, truncations, _ = env.step(actions_dict)
+            obs_dict, rewards, terminations, truncations, infos = env.step(actions_dict)
 
             for agent_id, r in rewards.items():
                 if "adversary" in agent_id:
@@ -138,30 +140,33 @@ def train():
             if all(list(terminations.values())) or all(list(truncations.values())):
                 break
 
-        # Compute returns
+        sliding_rewards.append(episode_reward)
+
         returns = []
         R = 0
         for r in reversed(memory['rewards']):
             R = r + GAMMA * R
             returns.insert(0, R)
 
-        # PPO update
         ppo_update(actor, critic, optimizer_actor, optimizer_critic,
                    memory['states_actor'], memory['actions'], returns, memory['logits'],
                    states_critic=memory['states_critic'])
 
-        # Logging
-        if episode % 50 == 0:
-            avg_reward = episode_reward / MAX_CYCLES
-            print(f"Episode {episode}/{MAX_EPISODES} | Avg Predator Reward: {avg_reward:.2f}")
+        # ===== Logging =====
+        if episode % LOG_INTERVAL == 0:
+            avg_reward = np.mean(sliding_rewards)
+            print(f"Episode {episode}/{MAX_EPISODES} | Avg Reward (last {SLIDING_WINDOW}): {avg_reward:.2f}")
 
-        # Save checkpoints
-        if episode % 5000 == 0:
-            torch.save(actor.state_dict(), f"predator_model_ep{episode}.pth")
-            print(f"Saved model at episode {episode}")
+        # ===== Save model =====
+        if episode % SAVE_INTERVAL == 0:
+            save_path = Path("predator_model.pth")
+            torch.save(actor.state_dict(), save_path)
+            print(f"Model saved at episode {episode}")
 
-    torch.save(actor.state_dict(), Path("predator_model_final.pth"))
-    print("Training complete. Final model saved at predator_model_final.pth")
+    # Save final model
+    save_path = Path("predator_model.pth")
+    torch.save(actor.state_dict(), save_path)
+    print("Training completed. Final model saved.")
 
 if __name__ == "__main__":
     train()
