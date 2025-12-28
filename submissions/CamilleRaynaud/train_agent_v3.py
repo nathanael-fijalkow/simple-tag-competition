@@ -16,7 +16,6 @@ MAX_EPISODES = 50000
 MAX_CYCLES = 50
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS = 5
-
 ACTION_DIM = 5
 
 # ===== Actor & Critic =====
@@ -63,7 +62,7 @@ def ppo_update(actor, critic, optimizer_actor, optimizer_critic, states, actions
         dist = torch.distributions.Categorical(logits=logits)
         old_dist = torch.distributions.Categorical(logits=old_logits)
         ratio = torch.exp(dist.log_prob(actions) - old_dist.log_prob(actions))
-        advantage = returns - critic(states_critic).squeeze()  # <-- utilise les states concat
+        advantage = returns - critic(states_critic).squeeze()
         surr1 = ratio * advantage
         surr2 = torch.clamp(ratio, 1 - EPS_CLIP, 1 + EPS_CLIP) * advantage
         actor_loss = -torch.min(surr1, surr2).mean()
@@ -93,9 +92,10 @@ def train():
     optimizer_actor = optim.Adam(actor.parameters(), lr=LR)
     optimizer_critic = optim.Adam(critic.parameters(), lr=LR)
 
-    for episode in range(MAX_EPISODES):
+    for episode in range(1, MAX_EPISODES+1):
         obs_dict, infos = env.reset()
         memory = {'states_actor': [], 'states_critic': [], 'actions': [], 'rewards': [], 'logits': []}
+        episode_reward = 0
 
         while env.agents:
             actions_dict = {}
@@ -119,7 +119,7 @@ def train():
                     action = dist.sample().item()
 
                     memory['states_actor'].append(o)
-                    memory['states_critic'].append(central_state)  # <-- corrige le bug
+                    memory['states_critic'].append(central_state)
                     memory['actions'].append(action)
                     memory['logits'].append(logits.detach().cpu().squeeze().numpy())
                     actions_dict[agent_id] = action
@@ -132,6 +132,7 @@ def train():
             for agent_id, r in rewards.items():
                 if "adversary" in agent_id:
                     memory['rewards'].append(r)
+                    episode_reward += r
 
             if all(list(terminations.values())) or all(list(truncations.values())):
                 break
@@ -144,12 +145,24 @@ def train():
             returns.insert(0, R)
 
         # PPO update
-        # pass correct states for critic
         ppo_update(actor, critic, optimizer_actor, optimizer_critic,
                    memory['states_actor'], memory['actions'], returns, memory['logits'],
-                   states_critic=memory['states_critic'])  # <-- ajout
+                   states_critic=memory['states_critic'])
 
+        # ----- Lightweight logging -----
+        if episode % 50 == 0:
+            avg_reward = episode_reward / MAX_CYCLES
+            print(f"Episode {episode}/{MAX_EPISODES} | Avg Predator Reward: {avg_reward:.2f}")
 
+        # Save every 1000 episodes
+        if episode % 1000 == 0:
+            torch.save(actor.state_dict(), f"predator_model_ep{episode}.pth")
+            print(f"Saved model at episode {episode}")
+
+    # Save final actor
+    save_path = Path("predator_model_final.pth")
+    torch.save(actor.state_dict(), save_path)
+    print(f"Training complete. Final model saved at {save_path}")
 
 if __name__ == "__main__":
     train()
