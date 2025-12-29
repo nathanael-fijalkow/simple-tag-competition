@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print("device", DEVICE)
 ACTION_DIM = 5
 GAMMA = 0.99
 LR = 3e-4
@@ -42,7 +43,7 @@ def train():
         replay_actions = []
         replay_returns = []
 
-        for episode in range(10000):
+        for episode in range(6000):
             obs, _ = env.reset()
             episode_states = []
             episode_actions = []
