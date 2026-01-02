@@ -1,6 +1,5 @@
 """
 Student Agent for Simple Tag Competition - Predator using PPO
-Author: idris
 """
 
 import torch
