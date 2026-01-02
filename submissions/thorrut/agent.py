@@ -1,7 +1,4 @@
-"""
-PPO agent for the predator.
-"""
-
+""" PPO agent for the predator. """
 from typing import cast
 import torch
 from torch.distributions.categorical import Categorical
@@ -17,7 +14,7 @@ class StudentAgent:
     Predator PPO agent logic is implemented here.
     """
     
-    def __init__(self):
+    def __init__(self, training=False):
         """
         Initialize the predator agent.
         """
@@ -26,9 +23,8 @@ class StudentAgent:
         self.submission_dir = Path(__file__).parent
         
         # Example: Load predator model
-        # model_path = self.submission_dir / "predator_model.pth"
-        # self.model = self.load_model(model_path)
-        pass
+        model_path = self.submission_dir / "predator_model.pth"
+        self.model = self.load_model(model_path, training)
     
     def get_action(self, observation, agent_id: str):
         """
@@ -43,7 +39,7 @@ class StudentAgent:
             action: Discrete action in range [0, 4]
                     0 = no action
                     1 = move left
-                    2 = move right  
+                    2 = move right
                     3 = move down
                     4 = move up
         """
@@ -52,11 +48,12 @@ class StudentAgent:
         # Example random policy (replace with your trained policy):
         # Action space is Discrete(5) by default
         # Note: During evaluation, RNGs are seeded per episode for determinism
-        action = np.random.randint(0, 5)
+        action, _, _, _ = self.model.forward_for_agent(observation,
+                                                          agent_id)
         
         return action
     
-    def load_model(self, model_path):
+    def load_model(self, model_path: Path, training=False):
         """
         Helper method to load a PyTorch model.
         
@@ -66,13 +63,15 @@ class StudentAgent:
         Returns:
             Loaded model
         """
-        # Example implementation:
-        # model = YourNeuralNetwork()
-        # if model_path.exists():
-        #     model.load_state_dict(torch.load(model_path, map_location='cpu'))
-        #     model.eval()
-        # return model
-        pass
+        model = get_global_team_agent()
+        if model is not None:
+            return model
+        model = AdversaryTeamAgent()
+        if not training and model_path.exists():
+            model.load_state_dict(torch.load(model_path, map_location='cpu'))
+            model.eval()
+        set_global_team_agent(model)
+        return model
 
 
 class AdversaryTeamAgent(nn.Module):
@@ -153,7 +152,7 @@ class AdversaryTeamAgent(nn.Module):
                   ta: torch.Tensor | None=None,
                   to_context: torch.Tensor | None=None,
                   ta_context: torch.Tensor | None=None,
-                  ):
+                  ) -> torch.Tensor:
         hidden, _ = self.encode_team_information(to, ta, to_context, ta_context)
         return self.critic(hidden)
 
@@ -162,7 +161,13 @@ class AdversaryTeamAgent(nn.Module):
                              ta: torch.Tensor | None=None,
                              to_context: torch.Tensor | None=None,
                              ta_context: torch.Tensor | None=None,
-                             action=None):
+                             action: torch.Tensor | None=None) -> tuple[
+        torch.Tensor,
+        tuple[torch.Tensor, torch.Tensor | None],
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor
+    ]:
         """
         Arguments:
            see the `encode_team_information` method
@@ -183,6 +188,47 @@ class AdversaryTeamAgent(nn.Module):
         if action is None:
             action = probs.sample()
         return action, context, probs.log_prob(action), probs.entropy(), self.critic(hidden)
+
+    # --- TEAM Actions ---
+    def start_team_step(self):
+        self._first_seen_agent_in_team: str | None = None
+        self._last_teammate_action: torch.Tensor | None = None
+        self._team_action_ctx: torch.Tensor | None = None
+        self._team_observation_ctx: torch.Tensor | None = None
+
+    def forward_for_agent(self, agent_observation: torch.Tensor, agent_id: str, action: torch.Tensor | None=None):
+        if (
+            self._first_seen_agent_in_team is None
+            or self._first_seen_agent_in_team == agent_id
+        ):
+            # a new step for the whole team starts
+            self.start_team_step()
+            self._first_seen_agent_in_team = agent_id
+        # return the actions for the current adversary
+        new_action, (new_observation_ctx, new_action_ctx), log_probs, entropy, critic_value = (
+            self.get_action_and_value(agent_observation,
+                                      self._last_teammate_action,
+                                      self._team_observation_ctx,
+                                      self._team_action_ctx,
+                                      action)
+        )
+        # update the context for the next adversaries
+        self._last_teammate_action = new_action
+        self._team_action_ctx = new_action_ctx
+        self._team_observation_ctx = new_observation_ctx
+        return new_action, log_probs, entropy, critic_value
+
+__global_team_agent: AdversaryTeamAgent | None = None
+
+def get_global_team_agent() -> AdversaryTeamAgent | None:
+    """Init the team agent or only return it, if already initiated."""
+    global __global_team_agent
+    return __global_team_agent
+
+def set_global_team_agent(team_agent: AdversaryTeamAgent):
+    global __global_team_agent
+    __global_team_agent = team_agent
+
 
 
 if __name__ == "__main__":
