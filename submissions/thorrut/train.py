@@ -136,7 +136,8 @@ if __name__ == "__main__":
             total_episodic_return = 0
 
             # each episode has num_steps
-            for step in range(0, max_cycles):
+            step = 0
+            while env.agents:
                 # rollover the observation
                 obs = batchify_obs(next_obs, device, agent_ids)
 
@@ -172,6 +173,8 @@ if __name__ == "__main__":
                 if any([terms[a] for a in terms]) or any([truncs[a] for a in truncs]):
                     end_step = step
                     break
+                step += 1
+            env.close()
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -284,12 +287,13 @@ if __name__ == "__main__":
     with torch.no_grad():
         # render 5 episodes out
         for episode in range(5):
+
             env_obs, infos = env.reset(seed=None)
             agent_ids, prey_agent, prey_id = get_agents_from_rest_env(env)
             obs = batchify_obs(env_obs, device, agent_ids)
             terms = [False]
             truncs = [False]
-            while not any(terms) and not any(truncs):
+            while env.agents:
                 actions, logprobs, _, values = agent.get_on_the_fly_action_and_value_for_team(obs, agent_ids)
                 prey_action = prey_agent.get_action(env_obs[prey_id], prey_id)
                 env_obs, rewards, terms, truncs, infos = env.step(
@@ -298,3 +302,4 @@ if __name__ == "__main__":
                 obs = batchify_obs(env_obs, device, agent_ids)
                 terms = [terms[a] for a in terms]
                 truncs = [truncs[a] for a in truncs]
+            env.close()
