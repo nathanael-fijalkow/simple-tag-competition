@@ -104,12 +104,10 @@ class AdversaryTeamAgent(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
-        self.team_decisions_encoder = nn.Sequential(
-            nn.Embedding(action_number, action_embedding_dim),
-            nn.RNN(
-                action_embedding_dim, hidden_dim, num_layers=2,
-                nonlinearity="tanh", batch_first=False
-            )
+        self.team_decisions_embedder = nn.Embedding(action_number, action_embedding_dim)
+        self.team_decisions_encoder = nn.RNN(
+            action_embedding_dim, hidden_dim, num_layers=2,
+            nonlinearity="tanh", batch_first=False
         )
         # Actor and Critic agents
         self.actor = self._layer_init(nn.Linear(hidden_dim, action_number), std=0.01)
@@ -158,7 +156,7 @@ class AdversaryTeamAgent(nn.Module):
             cast(
                 tuple[torch.Tensor, torch.Tensor],
                 self.team_decisions_encoder(
-                    previous_action.unsqueeze(0),
+                    self.team_decisions_embedder(previous_action.unsqueeze(0)),
                     prior_previous_action_ctx
                 )
             )
@@ -200,7 +198,7 @@ class AdversaryTeamAgent(nn.Module):
         team_action_hidden_states__partial, _ = cast(
             tuple[torch.Tensor, torch.Tensor],
             self.team_decisions_encoder(
-                chosen_actions[:-1],
+                self.team_decisions_embedder(chosen_actions[:-1]),
             )
         )  # shape (L-1, B, hidden_dim)
         team_action_hidden_states = torch.cat(
