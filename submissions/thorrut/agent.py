@@ -25,6 +25,7 @@ class StudentAgent:
         # Example: Load predator model
         model_path = self.submission_dir / "predator_model.pth"
         self.model = self.load_model(model_path, training)
+        self.model.start_team_step()
     
     def get_action(self, observation, agent_id: str):
         """
@@ -48,10 +49,11 @@ class StudentAgent:
         # Example random policy (replace with your trained policy):
         # Action space is Discrete(5) by default
         # Note: During evaluation, RNGs are seeded per episode for determinism
-        action, _, _, _ = self.model.forward_for_agent(observation,
+        tensor_observation = torch.tensor(observation[:-2]).unsqueeze(0)
+        action, _, _, _ = self.model.forward_for_agent(tensor_observation,
                                                           agent_id)
-        
-        return action
+        env_action = int(action[0].item())
+        return env_action
     
     def load_model(self, model_path: Path, training=False):
         """
