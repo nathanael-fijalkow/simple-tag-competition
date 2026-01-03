@@ -26,7 +26,8 @@ def batchify_obs(obs: dict, device, agent_order: list[str]) -> torch.Tensor:
     :return obs_b: shape (L, B, observation_feat_nb), with B equaling 1.
     """
     # convert to list of np arrays
-    obs_b = np.stack([obs[agent_id] for agent_id in agent_order], axis=0)
+    # keep only the predators and remove the two hidden observations
+    obs_b = np.stack([obs[agent_id][:-2] for agent_id in agent_order], axis=0)
     # convert to torch
     obs_b = torch.tensor(obs_b).to(device)
 
