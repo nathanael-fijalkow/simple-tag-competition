@@ -16,8 +16,11 @@ import torch
 import torch.optim as optim
 from pettingzoo.mpe import simple_tag_v3
 from pettingzoo.utils.env import ParallelEnv
+from torch.utils.tensorboard import SummaryWriter
+
 from agent import AdversaryTeamAgent
 from prey_agent import StudentAgent as PreyAgent
+from experiment_tracking import get_run_name, parse_args
 
 
 def batchify_obs(obs: dict, device, agent_order: list[str]) -> torch.Tensor:
@@ -74,6 +77,15 @@ def unbatchify(x: torch.Tensor, agent_order: list[str]) -> SimpleTagState:
 
 
 if __name__ == "__main__":
+    args = parse_args()
+    print(args)
+    run_name = get_run_name(args)
+    writer = SummaryWriter(f"runs/{run_name}")
+    writer.add_text(
+        "hyperparameters",
+        "|param|value|\n|-|-|\n%s"
+        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+    )
     """ALGO PARAMS"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ent_coef = 0.1
@@ -275,6 +287,14 @@ if __name__ == "__main__":
         print(f"Clip Fraction: {np.mean(clip_fracs)}")
         print(f"Explained Variance: {explained_var.item()}")
         print("\n-------------------------------------------\n")
+        writer.add_scalar("charts/episodic_return", np.mean(total_episodic_return), episode)
+        writer.add_scalar("losses/value_loss", v_loss.item(), episode)
+        writer.add_scalar("losses/policy_loss", pg_loss.item(), episode)
+        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), episode)
+        writer.add_scalar("losses/approx_kl", approx_kl.item(), episode)
+        writer.add_scalar("losses/clipfrac", np.mean(clip_fracs), episode)
+        writer.add_scalar("losses/explained_variance", explained_var.item(), episode)
+    writer.close()
 
     """ RENDER THE POLICY """
     env = cast(ParallelEnv, simple_tag_v3.parallel_env(
