@@ -10,6 +10,7 @@ Inspired from this tutorial:
     Author: Jet (https://github.com/jjshoots)
 """
 
+from pathlib import Path
 from typing import cast
 import numpy as np
 import torch
@@ -86,19 +87,19 @@ if __name__ == "__main__":
         "|param|value|\n|-|-|\n%s"
         % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
-    """ALGO PARAMS"""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ent_coef = 0.1
-    vf_coef = 0.1
-    clip_coef = 0.1
-    gamma = 0.99
-    batch_size = 32
+    """ ALGO PARAMS """
+    device = torch.device(
+        "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
+    )
+    ent_coef = args.ent_coef
+    vf_coef = args.vf_coef
+    clip_coef = args.clip_coef
+    gamma = args.gamma
+    mini_batch_size = args.mini_batch_size
     # with more max cycles, the episodic return will be higher
-    max_cycles = 25
+    max_cycles = args.num_steps
     # with enough total episodes, the episodic return is often better
-    # TODO: for now, episode with 0 reward are still possible, even with a big
-    # number of max_cycles
-    total_episodes = 150
+    total_episodes = args.total_episodes
 
     """ ENV SETUP """
     num_agents = 3  # 3 adversaries
@@ -220,9 +221,9 @@ if __name__ == "__main__":
         for repeat in range(3):
             # shuffle the indices we use to access the data
             np.random.shuffle(b_index)
-            for start in range(0, len(b_obs), batch_size):
+            for start in range(0, len(b_obs), mini_batch_size):
                 # select the indices we want to train on
-                end = start + batch_size
+                end = start + mini_batch_size
                 batch_index = b_index[start:end]
 
                 _, newlogprob, entropy, value = agent.get_action_and_value_for_team(
@@ -278,14 +279,6 @@ if __name__ == "__main__":
 
         print(f"Training episode {episode}")
         print(f"Episodic Return: {np.mean(total_episodic_return)}")
-        print(f"Episode Length: {end_step}")
-        print("")
-        print(f"Value Loss: {v_loss.item()}")
-        print(f"Policy Loss: {pg_loss.item()}")
-        print(f"Old Approx KL: {old_approx_kl.item()}")
-        print(f"Approx KL: {approx_kl.item()}")
-        print(f"Clip Fraction: {np.mean(clip_fracs)}")
-        print(f"Explained Variance: {explained_var.item()}")
         print("\n-------------------------------------------\n")
         writer.add_scalar("charts/episodic_return", np.mean(total_episodic_return), episode)
         writer.add_scalar("losses/value_loss", v_loss.item(), episode)
@@ -295,6 +288,12 @@ if __name__ == "__main__":
         writer.add_scalar("losses/clipfrac", np.mean(clip_fracs), episode)
         writer.add_scalar("losses/explained_variance", explained_var.item(), episode)
     writer.close()
+
+    """ SAVE THE MODEL """
+    model_path = Path(f"./ckpts/{run_name}.pth")
+    torch.save(agent.state_dict(), model_path)
+    print(f"Saved the model in {model_path}")
+    print("\n-------------------------------------------\n")
 
     """ RENDER THE POLICY """
     env = cast(ParallelEnv, simple_tag_v3.parallel_env(
