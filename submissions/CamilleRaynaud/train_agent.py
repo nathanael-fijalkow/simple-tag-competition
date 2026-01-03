@@ -1,63 +1,38 @@
-# ===============================
-# train_models_final.py
-# ===============================
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from pettingzoo.mpe import simple_tag_v3
+from torch.distributions import Categorical
+from pathlib import Path
 
-# ---------- Réseau Actor-Critic ----------
-class ActorCritic(nn.Module):
-    def __init__(self, obs_dim, action_dim=5):
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+class PPOPolicy(nn.Module):
+    def __init__(self, obs_dim=14, act_dim=5):
         super().__init__()
-        self.shared = nn.Sequential(
-            nn.Linear(obs_dim, 256),
+        self.body = nn.Sequential(
+            nn.Linear(obs_dim, 128),
             nn.ReLU(),
-            nn.Linear(256, 256),
-            nn.ReLU()
+            nn.Linear(128, 128),
+            nn.ReLU(),
         )
-        self.policy = nn.Linear(256, action_dim)
-        self.value = nn.Linear(256, 1)
+        self.policy = nn.Linear(128, act_dim)
+        self.value = nn.Linear(128, 1)
 
     def forward(self, x):
-        h = self.shared(x)
-        return self.policy(h), self.value(h)
+        x = self.body(x)
+        return self.policy(x), self.value(x)
 
 
-# ---------- Agent PPO ----------
-class PPOAgent:
-    def __init__(self, obs_dim, action_dim=5):
-        self.model = ActorCritic(obs_dim, action_dim)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=3e-4)
-        self.gamma = 0.99
-        self.clip_eps = 0.2
-        self.entropy_coef = 0.001  # 🔧 réduit
-        self.value_coef = 0.5
-
-    def act(self, obs):
-        obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-        logits, value = self.model(obs)
-        probs = torch.softmax(logits, dim=-1)
-        dist = torch.distributions.Categorical(probs)
-
-        action = dist.sample()
-        log_prob = dist.log_prob(action)
-
-        return (
-            action.item(),
-            log_prob.detach(),
-            value.squeeze().detach(),
-        )
-
-
-# ---------- Buffer ----------
-class RolloutBuffer:
+class AgentBuffer:
+    """Separate trajectories per predator"""
     def __init__(self):
-        self.obs = []
+        self.states = []
         self.actions = []
-        self.log_probs = []
+        self.logprobs = []
         self.rewards = []
         self.values = []
         self.dones = []
@@ -66,129 +41,131 @@ class RolloutBuffer:
         self.__init__()
 
 
-# ---------- PPO Update ----------
-def ppo_update(agent, buffer, epochs=4):
-    if len(buffer.rewards) == 0:
-        return
-
-    obs = torch.tensor(np.array(buffer.obs), dtype=torch.float32)
-    actions = torch.tensor(buffer.actions)
-    old_log_probs = torch.stack(buffer.log_probs)
-    values = torch.stack(buffer.values).squeeze()
-    rewards = buffer.rewards
-    dones = buffer.dones
-
-    # ----- Returns -----
+def compute_gae(rewards, values, dones, gamma=0.99, lam=0.95):
+    gae = 0
     returns = []
-    G = 0.0
-    for r, d in zip(reversed(rewards), reversed(dones)):
-        if d:
-            G = 0.0
-        G = r + agent.gamma * G
-        returns.insert(0, G)
-    returns = torch.tensor(returns, dtype=torch.float32)
+    values = values + [0]
+
+    for step in reversed(range(len(rewards))):
+        delta = rewards[step] + gamma * values[step+1] * (1-dones[step]) - values[step]
+        gae = delta + gamma * lam * (1-dones[step]) * gae
+        returns.insert(0, gae + values[step])
+    return returns
+
+
+def train():
+    env = simple_tag_v3.env(num_good=1, num_adversaries=3, num_obstacles=2)
+    env.reset()
+
+    policy = PPOPolicy().to(DEVICE)
+    optimizer = optim.Adam(policy.parameters(), lr=3e-4)
+
+    buffers = {aid: AgentBuffer() for aid in env.agents}
+
+    batch_size = 4096
+    update_steps = 5
+
+    for episode in range(2000):
+        env.reset()
+
+        for agent in env.agent_iter():
+            obs, reward, done, _ = env.last()
+
+            if done:
+                action = None
+            else:
+                obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+
+                logits, value = policy(obs_t)
+                dist = Categorical(logits=logits)
+                action = dist.sample()
+
+                buffers[agent].states.append(obs_t.cpu())
+                buffers[agent].actions.append(action.item())
+                buffers[agent].logprobs.append(dist.log_prob(action).item())
+                buffers[agent].values.append(value.item())
+
+            env.step(action)
+
+            # ---- Heuristic reward shaping ----
+            shaped_reward = reward
+
+            if obs is not None and len(obs) >= 4:
+                # approx prey direction components are usually early in obs vector
+                prey_dx, prey_dy = obs[0], obs[1]
+                dist_to_prey = np.sqrt(prey_dx**2 + prey_dy**2)
+                shaped_reward += -0.01 * dist_to_prey
+
+            buffers[agent].rewards.append(shaped_reward)
+            buffers[agent].dones.append(done)
+
+        # ---- when batch is full: PPO update ----
+        total_steps = sum(len(buf.rewards) for buf in buffers.values())
+        if total_steps >= batch_size:
+            optimize(policy, optimizer, buffers, update_steps)
+            for buf in buffers.values():
+                buf.clear()
+
+        if episode % 50 == 0:
+            print(f"Episode {episode} — collected {total_steps} steps")
+
+    save_model(policy)
+
+
+def optimize(policy, optimizer, buffers, update_steps):
+    gamma = 0.99
+    lam = 0.95
+    clip_eps = 0.2
+
+    states = []
+    actions = []
+    returns = []
+    values = []
+    logprobs_old = []
+
+    for buf in buffers.values():
+        R = compute_gae(buf.rewards, buf.values, buf.dones, gamma, lam)
+
+        states.extend(buf.states)
+        actions.extend(buf.actions)
+        returns.extend(R)
+        values.extend(buf.values)
+        logprobs_old.extend(buf.logprobs)
+
+    states = torch.cat(states).to(DEVICE)
+    actions = torch.tensor(actions).to(DEVICE)
+    returns = torch.tensor(returns).to(DEVICE)
+    values = torch.tensor(values).to(DEVICE)
+    logprobs_old = torch.tensor(logprobs_old).to(DEVICE)
 
     advantages = returns - values
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)  # 🔧
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-    for _ in range(epochs):
-        logits, value_preds = agent.model(obs)
-        probs = torch.softmax(logits, dim=-1)
-        dist = torch.distributions.Categorical(probs)
+    for _ in range(update_steps):
+        logits, value = policy(states)
+        dist = Categorical(logits=logits)
 
-        log_probs = dist.log_prob(actions)
-        ratios = torch.exp(log_probs - old_log_probs)
+        logprobs = dist.log_prob(actions)
+        ratio = torch.exp(logprobs - logprobs_old)
 
-        surr1 = ratios * advantages
-        surr2 = torch.clamp(ratios, 1-agent.clip_eps, 1+agent.clip_eps) * advantages
+        surr1 = ratio * advantages
+        surr2 = torch.clamp(ratio, 1-clip_eps, 1+clip_eps) * advantages
+
         policy_loss = -torch.min(surr1, surr2).mean()
+        value_loss = (returns - value.squeeze()).pow(2).mean()
 
-        value_loss = nn.MSELoss()(value_preds.squeeze(), returns)
-        entropy = dist.entropy().mean()
+        loss = policy_loss + 0.5*value_loss
 
-        loss = (
-            policy_loss
-            + agent.value_coef * value_loss
-            - agent.entropy_coef * entropy
-        )
-
-        agent.optimizer.zero_grad()
+        optimizer.zero_grad()
         loss.backward()
-        agent.optimizer.step()
+        optimizer.step()
 
 
-# ---------- Entraînement ----------
-def train():
-    env = simple_tag_v3.parallel_env(
-        num_good=1,
-        num_adversaries=3,
-        num_obstacles=2,
-        max_cycles=100,
-        continuous_actions=True,  # 🔧 CRITIQUE
-    )
-
-    obs, _ = env.reset()
-    predator_id = [a for a in obs if "adversary" in a][0]
-    obs_dim = obs[predator_id].shape[0]
-    print("Observation dimension:", obs_dim)
-
-    agent = PPOAgent(obs_dim)
-    buffer = RolloutBuffer()
-    update_every = 5
-
-    for episode in range(5000):
-        obs, _ = env.reset()
-        episode_reward = 0.0
-
-        # distances initiales
-        prev_dist = {
-            a: np.linalg.norm(obs[a][:2] - obs["agent_0"][:2])
-            for a in env.agents if "adversary" in a
-        }
-
-        while env.agents:
-            actions = {}
-            cache = {}
-
-            for aid in env.agents:
-                if "adversary" in aid:
-                    act, logp, val = agent.act(obs[aid])
-                    actions[aid] = act
-                    cache[aid] = (obs[aid], act, logp, val)
-                else:
-                    actions[aid] = 0  # 🔧 prey fixe
-
-            next_obs, rewards, terms, truncs, _ = env.step(actions)
-
-            for aid in cache:
-                curr_dist = np.linalg.norm(
-                    next_obs[aid][:2] - next_obs["agent_0"][:2]
-                )
-                delta_dist = prev_dist[aid] - curr_dist
-                shaped_reward = rewards[aid] + 0.1 * delta_dist  # 🔧
-
-                o, a, lp, v = cache[aid]
-                buffer.obs.append(o)
-                buffer.actions.append(a)
-                buffer.log_probs.append(lp)
-                buffer.values.append(v)
-                buffer.rewards.append(shaped_reward)
-                buffer.dones.append(terms[aid] or truncs[aid])
-
-                episode_reward += shaped_reward
-                prev_dist[aid] = curr_dist
-
-            obs = next_obs
-
-        if (episode + 1) % update_every == 0:
-            ppo_update(agent, buffer)
-            buffer.clear()
-
-        if episode % 100 == 0:
-            print(f"Episode {episode}, avg reward: {episode_reward:.2f}")
-
-    torch.save(agent.model.state_dict(), "ppo_predator.pth")
-    print("✔ Model saved as ppo_predator.pth")
+def save_model(policy):
+    out = Path("submissions/your_username/predator_model.pth")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(policy.state_dict(), out)
+    print("✔ Model saved to", out)
 
 
 if __name__ == "__main__":

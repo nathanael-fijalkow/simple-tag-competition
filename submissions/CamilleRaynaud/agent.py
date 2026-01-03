@@ -1,48 +1,47 @@
 import torch
 import torch.nn as nn
 import numpy as np
-import json
 from pathlib import Path
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-ACTION_DIM = 5
 
-class Actor(nn.Module):
-    def __init__(self, obs_dim, hidden=256):
+class StudentAgent:
+    def __init__(self):
+        self.submission_dir = Path(__file__).parent
+        model_path = self.submission_dir / "predator_model.pth"
+
+        self.model = ExampleNetwork(input_dim=14)
+
+        if model_path.exists():
+            state = torch.load(model_path, map_location="cpu")
+            self.model.load_state_dict(state)
+            self.model.eval()
+        else:
+            self.model = None  # fallback random policy
+
+    def get_action(self, observation, agent_id: str):
+        obs = torch.tensor(observation, dtype=torch.float32).unsqueeze(0)
+
+        # fallback random if no model
+        if self.model is None:
+            return int(np.random.randint(0, 5))
+
+        with torch.no_grad():
+            logits = self.model(obs)
+            action = torch.argmax(logits, dim=-1).item()
+
+        return int(action)
+
+
+class ExampleNetwork(nn.Module):
+    def __init__(self, input_dim, output_dim=5, hidden_dim=128):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden),
-            nn.Tanh(),
-            nn.Linear(hidden, hidden),
-            nn.Tanh(),
-            nn.Linear(hidden, ACTION_DIM)
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim)
         )
 
     def forward(self, x):
         return self.net(x)
-
-class StudentAgent:
-    def __init__(self):
-        root = Path(__file__).parent
-
-        metadata = json.loads((root / "predator_metadata.json").read_text())
-        self.obs_dim = metadata["obs_dim"]
-
-        self.actor = Actor(self.obs_dim).to(DEVICE)
-        self.actor.load_state_dict(torch.load(root / "predator_actor.pth", map_location=DEVICE))
-        self.actor.eval()
-
-    def get_action(self, observation, agent_id):
-        obs = np.asarray(observation, dtype=np.float32)
-
-        # HARD CHECK — no silent mismatch
-        assert len(obs) == self.obs_dim, \
-            f"Unexpected obs_dim {len(obs)} != {self.obs_dim}"
-
-        x = torch.tensor(obs, device=DEVICE).unsqueeze(0)
-
-        with torch.no_grad():
-            logits = self.actor(x)
-            action = torch.argmax(logits, dim=1).item()
-
-        return int(action)
