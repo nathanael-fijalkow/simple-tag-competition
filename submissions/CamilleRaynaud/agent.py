@@ -1,47 +1,62 @@
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
 from pathlib import Path
 
-
-class StudentAgent:
-    def __init__(self):
-        self.submission_dir = Path(__file__).parent
-        model_path = self.submission_dir / "predator_model.pth"
-
-        self.model = ExampleNetwork(input_dim=14)
-
-        if model_path.exists():
-            state = torch.load(model_path, map_location="cpu")
-            self.model.load_state_dict(state)
-            self.model.eval()
-        else:
-            self.model = None  # fallback random policy
-
-    def get_action(self, observation, agent_id: str):
-        obs = torch.tensor(observation, dtype=torch.float32).unsqueeze(0)
-
-        # fallback random if no model
-        if self.model is None:
-            return int(np.random.randint(0, 5))
-
-        with torch.no_grad():
-            logits = self.model(obs)
-            action = torch.argmax(logits, dim=-1).item()
-
-        return int(action)
-
-
-class ExampleNetwork(nn.Module):
-    def __init__(self, input_dim, output_dim=5, hidden_dim=128):
+# ---------------------------
+# Actor Network
+# ---------------------------
+class Actor(nn.Module):
+    def __init__(self, obs_dim, act_dim=5, hidden_dim=256):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+            nn.Linear(obs_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
+            nn.Linear(hidden_dim, act_dim)
         )
 
     def forward(self, x):
         return self.net(x)
+
+
+# ---------------------------
+# Student Predator Agent
+# ---------------------------
+class StudentAgent:
+    def __init__(self):
+        self.device = "cpu"
+        # Charger le modèle sauvegardé
+        path = Path(__file__).parent / "predator_model.pth"
+        self.model = None
+
+        if path.exists():
+            ckpt = torch.load(path, map_location=self.device)
+            self.obs_dim = ckpt.get("obs_dim", 16)
+            self.model = Actor(self.obs_dim)
+            self.model.load_state_dict(ckpt["actor"])
+            self.model.eval()
+        else:
+            # Valeur par défaut si pas de modèle
+            self.obs_dim = 16
+
+    def get_action(self, observation, agent_id: str):
+        obs = np.asarray(observation, dtype=np.float32)
+
+        # Pad ou trim pour matcher obs_dim
+        if obs.shape[0] < self.obs_dim:
+            obs = np.pad(obs, (0, self.obs_dim - obs.shape[0]))
+        elif obs.shape[0] > self.obs_dim:
+            obs = obs[:self.obs_dim]
+
+        if self.model is None:
+            return int(np.random.randint(0, 5))  # action aléatoire si pas de modèle
+
+        # Prédire l'action
+        with torch.no_grad():
+            obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+            logits = self.model(obs_tensor)
+            action = torch.argmax(logits, dim=1).item()
+
+        return int(action)
