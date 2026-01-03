@@ -29,12 +29,12 @@ def batchify_obs(obs: dict, device, agent_order: list[str]) -> torch.Tensor:
     # keep only the predators and remove the two hidden observations
     obs_b = np.stack([obs[agent_id][:-2] for agent_id in agent_order], axis=0)
     # convert to torch
-    obs_b = torch.tensor(obs_b).to(device)
+    obs_b = torch.tensor(obs_b).unsqueeze(1).to(device)
 
     return obs_b
 
 
-type SimpleTagState = dict[str, np.ndarray] | dict[str, float] | dict[str, int]
+type SimpleTagState = dict[str, np.ndarray] | dict[str, float] | dict[str, bool]
 
 
 def batchify(x: SimpleTagState, device, agent_order: list[str]) -> torch.Tensor:
@@ -156,7 +156,7 @@ if __name__ == "__main__":
                 )
 
                 # add to episode storage
-                rb_obs[step] = obs
+                rb_obs[step] = obs[:, 0]
                 rb_rewards[step] = batchify(rewards, device,
                                             agent_ids).sum(dim=0)[0]
                 rb_terms[step] = batchify(terms, device,

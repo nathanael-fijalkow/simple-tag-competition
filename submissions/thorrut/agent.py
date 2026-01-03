@@ -162,11 +162,15 @@ class AdversaryTeamAgent(nn.Module):
             )
             if previous_action is not None else (None, None)
         )
+        team_action_hidden_states = (
+            previous_action_ctx[-1] # last rnn layer
+            if previous_action_ctx is not None else None
+        )
         hidden_features = (
             # combine the observation features with the team action information
             # when existing
-            observation_hidden_features + previous_action_ctx
-            if previous_action_ctx is not None
+            observation_hidden_features + team_action_hidden_states
+            if team_action_hidden_states is not None
             else observation_hidden_features
         )
         return hidden_features, previous_action_ctx
@@ -301,7 +305,7 @@ class AdversaryTeamAgent(nn.Module):
         Arguments:
            see the `encode_on_the_fly_team_information` method
 
-        :return action_s: The chosen action for the adversary agent. Shape (B,)
+        :return action: The chosen action for the adversary agent. Shape (B,)
         :return context: The context features of the team previous action(s). Shape (B, hidden_dim)
         :return log_probs: The log probability of the chosen action. Shape (B,)
         :return entropy: The entropy of the action probability distribution. Shape (B,)
@@ -339,7 +343,7 @@ class AdversaryTeamAgent(nn.Module):
             )
         )
         # update the context for the next adversaries
-        self._last_teammate_action = new_action
+        self._last_teammate_action = new_action  # shape (B,)
         self._team_action_ctx = new_action_ctx
         return new_action, log_probs, entropy, critic_value
 
