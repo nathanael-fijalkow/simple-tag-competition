@@ -33,44 +33,43 @@ def batchify_obs(obs: dict, device, agent_order: list[str]) -> torch.Tensor:
     return obs_b
 
 
-def batchify(x, device):
-    """Converts SimpleTag style returns to batch of torch arrays."""
-    # TODO:
+type SimpleTagState = dict[str, np.ndarray | float | int]
+
+
+def batchify(x: SimpleTagState, device, agent_order: list[str]) -> torch.Tensor:
+    """Converts SimpleTag style returns to batch of torch arrays.
+
+    Let L be the number of agents.
+
+    Arguments:
+      dict with for each agent id a ndarray of shape (*,)
+
+    Return:
+      shape (L, 1, *), 1 is the batch axis
+    """
 
     # convert to list of np arrays
-    x = np.stack([x[a] for a in x], axis=0)
+    b = np.stack([x[agent_id] for agent_id in agent_order], axis=0)
     # convert to torch
-    x = torch.tensor(x).to(device)
+    b = torch.tensor(b).unsqueeze(1).to(device)
 
-    return x
-
-
-def unbatchify(x, agent_order: list[str]) -> dict:
-    """Converts np array to SimpleTag style arguments."""
-    x = x.cpu().numpy()
-    return { agent_id: x[k] for k, agent_id in enumerate(agent_order) }
+    return b
 
 
-def get_action_and_value(
-        observations: torch.Tensor,
-        env: ParallelEnv,
-        prey: PreyAgent,
-        adversaryTeam: AdversaryTeamAgent,
-):
-    actions, logprobs, values = {}, {}, {}
-    for agent_id in env.agents:
-        obs = observations[agent_id]
+def unbatchify(x: torch.Tensor, agent_order: list[str]) -> SimpleTagState:
+    """Converts np array to SimpleTag style arguments.
 
-        # Determine if this is a predator (adversary)
-        is_predator = "adversary" in agent_id
+    Let L be the number of agents.
 
-        if is_predator:
+    Arguments:
+      tensor of shape (L, 1, *)
 
-        else:
-            # Random prey agent for testing
-            action = prey.get_action(obs, agent_id)
+    Return:
+      a dict with, for each agent id, a ndarray of shape (*,)
 
-        actions[agent_id] = action
+    """
+    array = x.cpu().numpy()
+    return { agent_id: array[k, 0] for k, agent_id in enumerate(agent_order) }
 
 
 if __name__ == "__main__":
@@ -115,10 +114,12 @@ if __name__ == "__main__":
     total_episodic_return = 0
     rb_obs = torch.zeros((max_cycles, num_agents, observation_size)).to(device)
     rb_actions = torch.zeros((max_cycles, num_agents)).to(device)
-    rb_logprobs = torch.zeros((max_cycles, num_agents)).to(device)
-    rb_rewards = torch.zeros((max_cycles, num_agents)).to(device)
-    rb_terms = torch.zeros((max_cycles, num_agents)).to(device)
-    rb_values = torch.zeros((max_cycles, num_agents)).to(device)
+    # we reduce the logprobs, rewards and values for the whole team 
+    rb_logprobs = torch.zeros((max_cycles,)).to(device)
+    rb_rewards = torch.zeros((max_cycles,)).to(device)
+    # we keep this by convention, but for SimpleTag this is not meaningful
+    rb_terms = torch.zeros((max_cycles,)).to(device)
+    rb_values = torch.zeros((max_cycles,)).to(device)
 
     """ TRAINING LOGIC """
     # train for n number of episodes
@@ -136,7 +137,7 @@ if __name__ == "__main__":
                 obs = batchify_obs(next_obs, device, agent_ids)
 
                 # get action from the agent
-                actions, logprobs, _, values = agent.get_action_and_value(obs)
+                actions, logprobs, _, values = agent.get_on_the_fly_action_and_value_for_team(obs, agent_ids)
 
                 # let the prey act
                 prey_obs = next_obs[prey_id]
@@ -147,16 +148,18 @@ if __name__ == "__main__":
 
                 # execute the environment and log data
                 next_obs, rewards, terms, truncs, infos = env.step(
-                    unbatchify(actions, agent_ids)
+                    env_actions
                 )
 
                 # add to episode storage
                 rb_obs[step] = obs
-                rb_rewards[step] = batchify(rewards, device)
-                rb_terms[step] = batchify(terms, device)
+                rb_rewards[step] = batchify(rewards, device,
+                                            agent_ids).sum(dim=0)[0]
+                rb_terms[step] = batchify(terms, device,
+                                          agent_ids).max(dim=0)[0]
                 rb_actions[step] = actions
                 rb_logprobs[step] = logprobs
-                rb_values[step] = values.flatten()
+                rb_values[step] = values
 
                 # compute episodic return
                 total_episodic_return += rb_rewards[step].cpu().numpy()
@@ -179,15 +182,15 @@ if __name__ == "__main__":
             rb_returns = rb_advantages + rb_values
 
         # convert our episodes to batch of individual transitions
-        b_obs = torch.flatten(rb_obs[:end_step], start_dim=0, end_dim=1)
-        b_logprobs = torch.flatten(rb_logprobs[:end_step], start_dim=0, end_dim=1)
-        b_actions = torch.flatten(rb_actions[:end_step], start_dim=0, end_dim=1)
-        b_returns = torch.flatten(rb_returns[:end_step], start_dim=0, end_dim=1)
-        b_values = torch.flatten(rb_values[:end_step], start_dim=0, end_dim=1)
-        b_advantages = torch.flatten(rb_advantages[:end_step], start_dim=0, end_dim=1)
+        b_obs = rb_obs[:end_step]
+        b_logprobs = rb_logprobs[:end_step]
+        b_actions = rb_actions[:end_step]
+        b_returns = rb_returns[:end_step]
+        b_values = rb_values[:end_step]
+        b_advantages = rb_advantages[:end_step]
 
         # Optimizing the policy and value network
-        b_index = np.arange(len(b_obs))
+        b_index = np.arange(b_obs.shape[0])
         clip_fracs = []
 
         # for type-checking: init these variables with mock values out of the loop
@@ -200,8 +203,9 @@ if __name__ == "__main__":
                 end = start + batch_size
                 batch_index = b_index[start:end]
 
-                _, newlogprob, entropy, value = agent.get_action_and_value(
-                    b_obs[batch_index], b_actions.long()[batch_index]
+                _, newlogprob, entropy, value = agent.get_action_and_value_for_team(
+                    b_obs[batch_index].transpose(0, 1),
+                    b_actions.long()[batch_index].transpose(0, 1)
                 )
                 logratio = newlogprob - b_logprobs[batch_index]
                 ratio = logratio.exp()
@@ -278,7 +282,7 @@ if __name__ == "__main__":
             terms = [False]
             truncs = [False]
             while not any(terms) and not any(truncs):
-                actions, logprobs, _, values = agent.get_action_and_value(obs)
+                actions, logprobs, _, values = agent.get_action_and_value_for_team(obs)
                 obs, rewards, terms, truncs, infos = env.step(unbatchify(actions, env))
                 obs = batchify_obs(obs, device)
                 terms = [terms[a] for a in terms]

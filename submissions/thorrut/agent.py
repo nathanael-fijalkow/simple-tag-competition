@@ -217,7 +217,9 @@ class AdversaryTeamAgent(nn.Module):
     # --- ACTOR CRITIC HEADS ---
 
 
-    def actor_critic_forward(self, hidden: torch.Tensor, action_s: torch.Tensor | None):
+    def actor_critic_forward(
+            self, hidden: torch.Tensor, action_s: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return the results of the actor and critic heads.
 
         This function works for decisions for both one unit or the full team.
@@ -225,11 +227,9 @@ class AdversaryTeamAgent(nn.Module):
         :param hidden: shape (B, hidden_dim) or (L, B, hidden_dim)
         :param action_s: shape (B,) or (L, B)
 
-        TODO: check the shapes
-
         :return action_s: The chosen action(s) for the adversary agent(s). Shape (B,) or (L, B)
         :return log_probs: The log probability(ies) of the chosen action(s). Shape (B,) or (L, B)
-        :return entropy: The entropy of the action probabilities. Shape (B, action_number) or (L, B, action_number)
+        :return entropy: The entropy of the action probability distributions. Shape (B,) or (L, B)
         :return critic: The critic value. Shape (B,) or (L, B)
         """
         logits = self.actor(hidden)
@@ -238,11 +238,35 @@ class AdversaryTeamAgent(nn.Module):
             action_s = probs.sample()
         return action_s, probs.log_prob(action_s), probs.entropy(), self.critic(hidden)
 
+    def _actor_critic_team_reduction(
+        self, actions: torch.Tensor, log_probs: torch.Tensor,
+        entropies: torch.Tensor, critic_values: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Reduce the gathered per-unit results as team values.
+
+        Arguments:
+           See the `actor_critic_forward` method. All the shapes are (L, B)
+
+        Return:
+           The reduced results of shapes (B,). Only the actions are still of
+           shape (L, B)
+
+        """
+        # cf. a documentation page to justify this reduction
+        return (
+                actions,
+                log_probs.sum(dim=0),  # team action log prob
+                entropies.sum(dim=0),  # team action prob distribution entropy
+                critic_values[0]  # only the first critic value is in function
+                                  # of the environment state only so we keep
+                                  # this one
+        )
+
 
     # --- FORWARD ---
 
 
-    def get_action_and_value(self,
+    def get_action_and_value_for_team(self,
                              team_observations: torch.Tensor,
                              actions: torch.Tensor) -> tuple[
         torch.Tensor,
@@ -257,14 +281,17 @@ class AdversaryTeamAgent(nn.Module):
         :param action: If provided, force the actions to be chosen and return the probs and logits for these actions.
 
         Return:
-           see the `actor_critic_forward` method.
+           See the `actor_critic_forward` method. The logprobs, entropy and
+           critic values are reduced over the team's results.
         """
 
         hidden = self.encode_team_information(team_observations, actions)
-        return self.actor_critic_forward(hidden, actions)
+        return self._actor_critic_team_reduction(
+            *self.actor_critic_forward(hidden, actions)
+        )
 
 
-    def get_on_the_fly_action_and_value(
+    def _get_on_the_fly_action_and_value(
         self,
         unit_observations: torch.Tensor,
         previous_action: torch.Tensor | None=None,
@@ -275,9 +302,9 @@ class AdversaryTeamAgent(nn.Module):
            see the `encode_on_the_fly_team_information` method
 
         :return action_s: The chosen action for the adversary agent. Shape (B,)
-        :return context: The context features of the team previous action. Shape (B, hidden_dim)
+        :return context: The context features of the team previous action(s). Shape (B, hidden_dim)
         :return log_probs: The log probability of the chosen action. Shape (B,)
-        :return entropy: The entropy of the action probabilities. Shape (B, action_number)
+        :return entropy: The entropy of the action probability distribution. Shape (B,)
         :return critic: The critic value. Shape (B,)
         """
         hidden, context = self.encode_on_the_fly_team_information(
@@ -305,7 +332,7 @@ class AdversaryTeamAgent(nn.Module):
             self._first_seen_agent_in_team = agent_id
         # return the actions for the current adversary
         new_action, new_action_ctx, log_probs, entropy, critic_value = (
-            self.get_on_the_fly_action_and_value(
+            self._get_on_the_fly_action_and_value(
                 agent_observation,
                 self._last_teammate_action,
                 self._team_action_ctx,
@@ -316,29 +343,38 @@ class AdversaryTeamAgent(nn.Module):
         self._team_action_ctx = new_action_ctx
         return new_action, log_probs, entropy, critic_value
 
-
     def get_on_the_fly_action_and_value_for_team(
         self,
         team_observations: torch.Tensor,
         team_agent_ids: list[str]
     ):
-        """
+        """Sequential forward for the team. Generate the actions on-the-fly.
 
         :param team_observations: shape (L, B, observation_feat_nb)
         :param team_agent_ids: list of L elements
-        """
-        team_size, b, _ = team_observations.shape
-        actions = torch.empty((team_size, b)).to(team_observations.device)
-        log_probs = torch.empty((team_size, b)).to(team_observations.device) 
-        entropy = torch.empty((team_size, b, 5))  # TODO: rename in action_nb
-        critic_values = torch.empty((team_size, b)).to(team_observations.device)
 
-        # TODO: zip and concatenate
-        for k, agent_id in enumerate(team_agent_ids):
-            action, lp, entr, crit = self.forward_for_agent(team_observations[k], agent_id)
-            actions[k] = action
-            log_probs[k] = lp
-            entropy[k] = entropy
+        Return:
+           See the `actor_critic_forward` method. The returned actions tensor
+           has a "team" first axis so its shape are (L, B, *) instead of
+           (B, *). The logprobs, entropy and critic values are reduced over the
+           team's results (so their shape is (B,)).
+        """
+        actions, log_probs, entropy, critic_values = (
+            torch.stack(outputs, dim=0).to(outputs[0].device)
+            for outputs in cast(
+                tuple[
+                tuple[torch.Tensor, ...],
+                tuple[torch.Tensor, ...],
+                tuple[torch.Tensor, ...],
+                tuple[torch.Tensor, ...],
+            ], zip(*(
+                    self.forward_for_agent(team_observations[k], agent_id)
+                    for k, agent_id in enumerate(team_agent_ids)
+                ))
+            )
+        )  # shape (L, B)
+        return self._actor_critic_team_reduction(actions, log_probs, entropy,
+                                                critic_values)
 
 
 __global_team_agent: AdversaryTeamAgent | None = None
