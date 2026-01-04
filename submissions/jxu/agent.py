@@ -31,7 +31,15 @@ class StudentAgent:
         self.model = DQNNetwork(self.input_dim, self.output_dim, hidden_dim=128)
         self.model.eval()  # mode inference
 
-        # Replay buffer & hyperparams for later training
+        #debug
+        # Example: Load your trained models
+        # Get the directory where this file is located
+        self.submission_dir = Path(__file__).parent
+        
+        # Example: Load predator model
+        model_path = self.submission_dir / "predator_model.pth"
+        self.model = self.load_model(model_path)
+       
         self.memory = []
         self.max_memory = 5000
         self.batch_size = 32
