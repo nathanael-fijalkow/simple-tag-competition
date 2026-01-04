@@ -34,11 +34,11 @@ class StudentAgent:
         #debug
         # Example: Load your trained models
         # Get the directory where this file is located
-        #self.submission_dir = Path(__file__).parent
+        self.submission_dir = Path(__file__).parent
         
         # Example: Load predator model
-        #model_path = self.submission_dir / "predator_model.pth"
-        #self.model = self.load_model(model_path)
+        model_path = self.submission_dir / "predator_model.pth"
+        self.model = self.load_model(model_path)
        
         self.memory = []
         self.max_memory = 5000
@@ -99,6 +99,24 @@ class StudentAgent:
 
         # Decay epsilon
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+    
+    def load_model(self, model_path):
+        """
+        Helper method to load a PyTorch model.
+        
+        Args:
+            model_path: Path to the .pth file
+            
+        Returns:
+            Loaded model
+        """
+        # Example implementation:
+        model = DQNNetwork(self.input_dim, self.output_dim, hidden_dim=128)
+        if model_path.exists():
+             model.load_state_dict(torch.load(model_path, map_location='cpu'))
+             model.eval()
+        return model
+        
 
 
 if __name__ == "__main__":
