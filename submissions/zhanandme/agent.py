@@ -1,3 +1,4 @@
+#agent trained with ppo
 import numpy as np
 import torch
 import torch.nn as nn
@@ -45,4 +46,3 @@ class StudentAgent:
             action = torch.argmax(logits, dim=1).item()
 
         return action
-
