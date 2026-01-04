@@ -35,7 +35,7 @@ class StudentAgent:
         # Get the directory where this file is located
         self.submission_dir = Path(__file__).parent
         
-        # Model parameters (must match training)
+        # Model parameters 
         self.state_dim = 16  # Predator observation dimension in Simple Tag
         self.action_dim = 5   # Discrete actions: 0-4
         
@@ -46,10 +46,10 @@ class StudentAgent:
         model_path = self.submission_dir / "predator_model.pth"
         if model_path.exists():
             self.load_model(model_path)
-            print(f"✓ Loaded model from {model_path}")
+            print(f" Loaded model from {model_path}")
         else:
-            print(f"⚠ Warning: Model not found at {model_path}")
-            print("  Using randomly initialized weights")
+            print(f" Warning: Model not found at {model_path}")
+            print(" Using randomly initialized weights")
         
         # Set to evaluation mode
         self.actor.eval()
