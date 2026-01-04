@@ -41,8 +41,8 @@ Cette approche a donc été retenue pour le rendu final car elle maximise la mé
 ## 6. Organisation du dépôt
 
 
-* `/submissions/mayamahouachi/agent.py` : définition et chargement de l’agent utilisé pour l’évaluation
-* `train_ppo_predators.py` : script d’entraînement
-* `ppo.py` : implémentation de l’algorithme PPO
-* `tune.py` : optimisation des hyperparamètres avec Optuna
+* `/submissions/mayamahouachi/agent.py` : définition et chargement de l’agent utilisé pour l’évaluation.
+* `train_ppo_predators.py` : script d’entraînement.
+* `ppo.py` : implémentation de l’algorithme PPO.
+* `tune.py` : optimisation des hyperparamètres avec Optuna.
 
