@@ -7,7 +7,6 @@ Students should implement the StudentAgent class for the predator only.
 import torch
 import torch.nn as nn
 import numpy as np
-from stable_baselines3 import PPO
 from pathlib import Path
 
 class PredatorPolicy(nn.Module):
