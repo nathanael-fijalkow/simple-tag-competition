@@ -45,3 +45,4 @@ class StudentAgent:
             action = torch.argmax(logits, dim=1).item()
 
         return action
+
