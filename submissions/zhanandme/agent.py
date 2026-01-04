@@ -41,3 +41,4 @@ class StudentAgent:
             logits = self.actor(torch.tensor(obs).unsqueeze(0))
             action = torch.argmax(logits, dim=1).item()
         return action
+    
