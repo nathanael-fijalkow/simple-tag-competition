@@ -27,7 +27,7 @@ class StudentAgent:
 
         if not _GLOBAL["loaded"]:
             actor = Actor(state_dim=16, action_dim=5, hidden_size=128).to(self.device)
-            model_path = self.submission_dir / "shared_predator_model.pth"
+            model_path = self.submission_dir / "predator_model.pth"
             if model_path.exists():
                 ckpt = torch.load(model_path, map_location="cpu")
                 if isinstance(ckpt, dict) and "actor_state_dict" in ckpt:
