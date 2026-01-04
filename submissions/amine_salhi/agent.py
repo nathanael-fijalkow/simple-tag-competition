@@ -2,7 +2,7 @@
 PPO Implementation with Reward Shaping and Orthogonal Initialization.
 """
 
-# Remarque: le code d'entraînement et du tuning des hyperparamètres est dans un autre fichier, vous le trouverez dans mon fork.
+# Remarque: le code d'entraînement et du tuning des hyperparamètres est dans un autre fichier, vous le trouverez dans mon fork sur GitHub.
 
 import torch
 import torch.nn as nn
