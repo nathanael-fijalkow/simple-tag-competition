@@ -22,12 +22,20 @@ jobs:
     timeout-minutes: 30
     
     steps:
-      - name: Checkout repository
+      - name: Checkout main branch (leaderboard + history)
         uses: actions/checkout@v4
         with: 
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: main
           fetch-depth: 0
           persist-credentials: true
+
+      - name: Checkout submission (PR head)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          path: submission_repo
+          fetch-depth: 1
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,38 +47,41 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-      
-      - name: Get changed files
-        id: changed-files
-        uses: tj-actions/changed-files@v46
-        with:
-          files: |
-            submissions/**
-      
-      - name: Identify submission directory
+
+      - name: Locate submission directory
         id: submission
         run: |
-          # Get the list of changed files
-          changed_files="${{ steps.changed-files.outputs.all_changed_files }}"
-          
-          # Extract submission directory
-          for file in $changed_files; do
-            if [[ $file == submissions/* ]]; then
-              # Extract username from path: submissions/<username>/...
-              username=$(echo $file | cut -d'/' -f2)
-              submission_dir="submissions/$username"
-              echo "username=$username" >> $GITHUB_OUTPUT
-              echo "submission_dir=$submission_dir" >> $GITHUB_OUTPUT
-              echo "Found submission from: $username"
-              break
-            fi
-          done
-          
-          # Verify we found a submission
-          if [ -z "$username" ]; then
-            echo "Error: No valid submission found in changed files"
+          # Find exactly one submission folder inside the student's PR checkout
+          submission_root="submission_repo/submissions"
+
+          if [ ! -d "$submission_root" ]; then
+            echo "Error: submissions directory not found in PR checkout"
             exit 1
           fi
+
+          # Expect exactly one student folder with agent.py
+          submission_dirs=$(find "$submission_root" -maxdepth 1 -mindepth 1 -type d)
+
+          count=$(echo "$submission_dirs" | sed '/^$/d' | wc -l | tr -d ' ')
+
+          if [ "$count" -eq 0 ]; then
+            echo "Error: No submission folder found under submissions/"
+            exit 1
+          fi
+
+          if [ "$count" -gt 1 ]; then
+            echo "Error: Multiple submission folders found under submissions/. Please submit only one."
+            echo "$submission_dirs"
+            exit 1
+          fi
+
+          submission_dir="$submission_dirs"
+
+          username=$(basename "$submission_dir")
+
+          echo "username=$username" >> $GITHUB_OUTPUT
+          echo "submission_dir=$submission_dir" >> $GITHUB_OUTPUT
+          echo "Found submission from: $username"
       
       - name: Validate submission structure
         run: |
@@ -83,7 +94,7 @@ jobs:
           fi
           
           # Check for only allowed files
-          for file in $submission_dir/*; do
+          for file in "$submission_dir"/*; do
             filename=$(basename "$file")
             if [[ ! "$filename" =~ ^(agent\.py|.*\.pth)$ ]]; then
               echo "Error: Invalid file found: $filename"
@@ -106,7 +117,7 @@ jobs:
           submission_dir="${{ steps.submission.outputs.submission_dir }}"
           username="${{ steps.submission.outputs.username }}"
           
-          # Create results directory
+          # Create results directory (preserves existing leaderboard files from main checkout)
           mkdir -p results
           
           # Run evaluation
@@ -141,19 +152,6 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          
-          # Save generated files to temp location
-          mkdir -p /tmp/evaluation_results
-          cp -r results/* /tmp/evaluation_results/ || true
-          cp docs/index.html /tmp/index.html || true
-          
-          # Checkout main branch (force to overwrite any conflicts)
-          git fetch origin main
-          git checkout -f main
-          
-          # Copy generated files back
-          cp -r /tmp/evaluation_results/* results/
-          cp /tmp/index.html docs/index.html
           
           git add results/
           git add docs/index.html
