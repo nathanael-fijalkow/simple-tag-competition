@@ -8,12 +8,16 @@ import os
 class PPOModel(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(PPOModel, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 64)
-        self.fc2 = nn.Linear(64, 64)
+        # OPTIMISATION 1 : On augmente la capacité du réseau (64 -> 256)
+        # Cela permet de capturer des micro-détails de position
+        self.fc1 = nn.Linear(input_dim, 256)
+        self.fc2 = nn.Linear(256, 256)
         
-        self.actor = nn.Linear(64, output_dim)
+        # Tête de l'acteur (Politique)
+        self.actor = nn.Linear(256, output_dim)
         
-        self.critic = nn.Linear(64, 1)
+        # Tête du critique (Value function)
+        self.critic = nn.Linear(256, 1)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
@@ -32,14 +36,14 @@ class PPOModel(nn.Module):
 # --- CLASSE DE SOUMISSION ---
 class StudentAgent:
     def __init__(self):
+        # Paramètres de l'environnement Simple Tag
         self.obs_dim = 16 
         self.act_dim = 5 
         
-        # Initialisation du modèle
         self.device = torch.device("cpu") 
+        # On instancie le modèle avec la nouvelle architecture
         self.policy = PPOModel(self.obs_dim, self.act_dim).to(self.device)
         
-        # Chargement des poids
         self.load_model()
 
     def load_model(self):
@@ -47,21 +51,25 @@ class StudentAgent:
         model_path = os.path.join(script_dir, "predator_model.pth")
         
         if os.path.exists(model_path):
+            # map_location est important pour éviter les erreurs si entraîné sur GPU
             self.policy.load_state_dict(torch.load(model_path, map_location=self.device))
-            self.policy.eval() # Mode évaluation (fige les couches comme Dropout)
+            self.policy.eval() 
         else:
             print("Attention: Pas de modèle trouvé, comportement aléatoire.")
 
     def get_action(self, observation, agent_id: str):
+        # Gestion des dictionnaires parfois renvoyés par PettingZoo
         if isinstance(observation, dict):
             observation = observation['observation']
         
+        # Transformation en tensor
         obs_tensor = torch.tensor(observation, dtype=torch.float32).unsqueeze(0).to(self.device)
         
+        # Inférence
         with torch.no_grad():
             probs = self.policy.get_action_prob(obs_tensor)
             
-        #Choix de l'action
+        # Choix déterministe (Argmax) pour la compétition
         action = torch.argmax(probs).item()
         
         return action
