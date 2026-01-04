@@ -26,7 +26,7 @@ class StudentAgent:
         # Get the directory where this file is located
         self.submission_dir = Path(__file__).parent
 
-        model_path = self.submission_dir / "predator_model1.pth"
+        model_path = self.submission_dir / "predator_model.pth"
         self.model = PredatorPolicy(input_dim=16, output_dim=5)
         self.model.load_state_dict(torch.load(model_path, map_location="cpu"))
         self.model.eval()
