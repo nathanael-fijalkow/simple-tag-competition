@@ -37,6 +37,7 @@ class StudentAgent:
         
         # Example: Load predator model
         model_path = self.submission_dir / "predator_model.pth"
+        print(model_path)
         # On utilise le DQN Standard
         self.model = DQNNetwork(self.input_dim, self.output_dim, hidden_dim=128)
 
@@ -70,13 +71,10 @@ class StudentAgent:
         """
         obs_tensor = torch.FloatTensor(observation).unsqueeze(0)
 
-        # Epsilon-greedy
-        if random.random() < self.epsilon:
-            return np.random.randint(0, self.output_dim)
-        else:
-            with torch.no_grad():
-                q_values = self.model(obs_tensor)
-                return torch.argmax(q_values, dim=1).item()
+        
+        with torch.no_grad():
+            q_values = self.model(obs_tensor)
+            return torch.argmax(q_values, dim=1).item()
 
     
     
