@@ -1,83 +1,47 @@
-"""
-Agent submission for Simple Tag competition.
-Loads the trained DQN model from rendu.py
-"""
-
 import torch
 import torch.nn as nn
 import numpy as np
 from pathlib import Path
 
-
-class QNetwork(nn.Module):
-    """Q-Network matching the architecture from rendu.py"""
-    def __init__(self, input_dim=14, hidden_dim=512, output_dim=5):
-        super(QNetwork, self).__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
-        )
-
-    def forward(self, x):
-        return self.network(x)
-
+class ReinforcePolicy(nn.Module):
+    def __init__(self, obs_dim=14, num_actions=5, architecture=(128, 128)):
+        super().__init__()
+        self.actor = self.build_mlp(obs_dim, num_actions, architecture)
+    def build_mlp(self, input_dim, output_dim, hidden_sizes):
+        modules = []
+        current_dim = input_dim
+        for hidden_dim in hidden_sizes:
+            modules.extend([
+                nn.Linear(current_dim, hidden_dim),
+                nn.ReLU()
+            ])
+            current_dim = hidden_dim
+        modules.append(nn.Linear(current_dim, output_dim))
+        return nn.Sequential(*modules)
+    def policy(self, x):
+        return self.actor(x)
 
 class StudentAgent:
-    """
-    Predator agent using trained DQN model.
-    """
-    
     def __init__(self):
-        """
-        Initialize your predator agent by loading the trained model.
-        """
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        # Load the trained model
-        self.submission_dir = Path(__file__).parent
-        model_path = self.submission_dir / "predator_model.pth"
-        
-        self.model = QNetwork().to(self.device)
+        self.obs_dim = 14
+        self.num_actions = 5
+        self.model = ReinforcePolicy(self.obs_dim, self.num_actions).to(self.device)
+        model_path = Path(__file__).parent / "predator_model.pth"
         if model_path.exists():
-            self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+            state = torch.load(model_path, map_location=self.device)
+            # Compatible with both direct and actor-only state_dict
+            if any(k.startswith('actor.') for k in state.keys()):
+                self.model.actor.load_state_dict({k.replace('actor.', ''): v for k, v in state.items()})
+            else:
+                self.model.actor.load_state_dict(state)
             self.model.eval()
         else:
             raise FileNotFoundError(f"Model file not found: {model_path}")
-    
     def get_action(self, observation, agent_id: str):
-        """
-        Get action using the trained Q-network.
-        
-        Args:
-            observation: Agent's observation from the environment (numpy array, shape (14,))
-            agent_id (str): Unique identifier for this agent instance
-            
-        Returns:
-            action: Discrete action in range [0, 4]
-        """
-        # Convert observation to tensor
-        obs = torch.FloatTensor(observation).unsqueeze(0).to(self.device)
-        
-        # Get Q-values and select best action
+        obs = np.asarray(observation, dtype=np.float32).flatten()
+        obs_tensor = torch.from_numpy(obs).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            q_values = self.model(obs)
-            action = q_values.argmax().item()
-        
+            logits = self.model.policy(obs_tensor)
+            action = int(logits.argmax(dim=-1).item())
         return action
-
-
-if __name__ == "__main__":
-    # Test the agent
-    print("Testing StudentAgent...")
-    
-    # Test predator agent (adversary has 14-dim observation)
-    predator_agent = StudentAgent()
-    predator_obs = np.random.randn(14)  # Predator observation size
-    predator_action = predator_agent.get_action(predator_obs, "adversary_0")
-    print(f"Predator observation shape: {predator_obs.shape}")
-    print(f"Predator action: {predator_action} (should be in [0, 4])")
-    
-    print("✓ Agent is working!")
