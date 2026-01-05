@@ -74,7 +74,8 @@ class StudentAgent:
         
         with torch.no_grad():
             q_values = self.model(obs_tensor)
-            return torch.argmax(q_values, dim=1).item()
+            action = q_values.argmax().item()
+        return action
 
     
     
