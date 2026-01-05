@@ -24,7 +24,7 @@ class ReinforcePolicy(nn.Module):
 class StudentAgent:
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.obs_dim = 14
+        self.obs_dim = 16
         self.num_actions = 5
         self.model = ReinforcePolicy(self.obs_dim, self.num_actions).to(self.device)
         model_path = Path(__file__).parent / "predator_model.pth"
