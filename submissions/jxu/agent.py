@@ -11,7 +11,7 @@ import random
 
 # --- Neural network for DQN ---
 class DQNNetwork(nn.Module):
-    def __init__(self, input_dim, output_dim=5, hidden_dim=128):
+    def __init__(self, input_dim, output_dim=5, hidden_dim=256):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
@@ -37,9 +37,9 @@ class StudentAgent:
         
         # Example: Load predator model
         model_path = self.submission_dir / "predator_model.pth"
-        print(model_path)
+        
         # On utilise le DQN Standard
-        self.model = DQNNetwork(self.input_dim, self.output_dim, hidden_dim=128)
+        self.model = DQNNetwork(self.input_dim, self.output_dim, hidden_dim=256)
 
         if model_path.exists():
             try:
