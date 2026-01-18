@@ -29,7 +29,7 @@ def load_agent_class(agent_file: Path):
     return module.StudentAgent
 
 
-def test_agent(agent_file: Path, num_episodes: int = 5):
+def test_agent(agent_file: Path, num_episodes: int = 100):
     """
     Test a student agent locally.
     
